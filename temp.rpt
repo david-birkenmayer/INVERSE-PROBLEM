@@ -1,0 +1,40 @@
+  Page 1                                    Fri Feb 27 15:19:36 2026
+
+  ******************************************************************
+  *                           E P A N E T                          *
+  *                   Hydraulic and Water Quality                  *
+  *                   Analysis for Pipe Networks                   *
+  *                         Version 2.2                            *
+  ******************************************************************
+  
+  Error 202: illegal numeric value 105.83552102 in [JUNCTIONS] section:
+   2                                150    105.83552102 1                          ;
+
+  Error 202: illegal numeric value 85.485404481 in [JUNCTIONS] section:
+   3                                160    85.485404481 1                          ;
+
+  Error 202: illegal numeric value 106.01416102 in [JUNCTIONS] section:
+   4                                155    106.01416102 1                          ;
+
+  Error 202: illegal numeric value 129.79830481 in [JUNCTIONS] section:
+   5                                150    129.79830481 1                          ;
+
+  Error 202: illegal numeric value 566.23255551 in [JUNCTIONS] section:
+   6                                165    566.23255551 1                          ;
+
+  Error 202: illegal numeric value 281.90415243 in [JUNCTIONS] section:
+   1                                160    281.90415243 1                          ;
+
+  Error 202: illegal numeric value 1.000000 in [PATTERNS] section:
+  1 1.000000
+
+  Error 202: illegal numeric value 75.0000 in [ENERGY] section:
+  GLOBAL EFFICIENCY      75.0000
+
+  Error 202: illegal numeric value 0.0000 in [ENERGY] section:
+  GLOBAL PRICE           0.0000
+
+  Error 202: illegal numeric value 0.0000 in [ENERGY] section:
+  DEMAND CHARGE          0.0000
+
+  Error 200: one or more errors in input file
