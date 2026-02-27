@@ -36,6 +36,15 @@ class SingleNodeResult:
     success: bool
 
 
+@dataclass(frozen=True)
+class FeasibilityResult:
+    flows: Dict[str, float]
+    heads: Dict[str, float]
+    max_violation: float
+    min_demand_viol: float
+    success: bool
+
+
 def _require_scipy() -> None:
     try:
         import scipy  # noqa: F401
@@ -100,6 +109,7 @@ def solve_demand_bounds(
     c_secondary: Dict[str, float],
     C_primary: Dict[str, float],
     pipe_resistances: Dict[str, float],
+    preferred_flow_sign: Optional[Dict[str, float]] = None,
     initial_guess: Optional[SolverResult] = None,
 ) -> DemandBounds:
     """
@@ -127,7 +137,14 @@ def solve_demand_bounds(
     pipe_secondary_set = set(pipe_secondary)
     for i, pipe_id in enumerate(pipes):
         if pipe_id in pipe_primary_set:
-            lower[i] = C_primary[pipe_id]
+            C_e = C_primary[pipe_id]
+            sign = 1.0
+            if preferred_flow_sign is not None and pipe_id in preferred_flow_sign:
+                sign = 1.0 if preferred_flow_sign[pipe_id] >= 0 else -1.0
+            if sign >= 0:
+                lower[i] = C_e
+            else:
+                upper[i] = -C_e
         elif pipe_id in pipe_secondary_set:
             c_e = c_secondary[pipe_id]
             lower[i] = -c_e
@@ -151,14 +168,15 @@ def solve_demand_bounds(
                 inflow[pipe.end_node] += q_e
             if pipe.start_node in outflow:
                 outflow[pipe.start_node] += q_e
-        return {j: inflow[j] - outflow[j] for j in junctions}
+        # Negative demand denotes consumption
+        return {j: outflow[j] - inflow[j] for j in junctions}
 
     def demand_ineq_fun(x: np.ndarray) -> np.ndarray:
         q = x[:n_q]
         d = demand_from_q(q)
         return np.array([d[j] for j in junctions], dtype=float)
 
-    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.zeros(n_h), ub=np.full(n_h, np.inf))
+    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.full(n_h, -np.inf), ub=np.zeros(n_h))
 
     if initial_guess is None:
         x0 = np.zeros(n_vars, dtype=float)
@@ -230,6 +248,7 @@ def solve_single_node_min(
     c_secondary: Dict[str, float],
     C_primary: Dict[str, float],
     pipe_resistances: Dict[str, float],
+    preferred_flow_sign: Optional[Dict[str, float]] = None,
     initial_guess: Optional[SolverResult] = None,
 ) -> SingleNodeResult:
     _require_scipy()
@@ -256,7 +275,14 @@ def solve_single_node_min(
     pipe_secondary_set = set(pipe_secondary)
     for i, pipe_id in enumerate(pipes):
         if pipe_id in pipe_primary_set:
-            lower[i] = C_primary[pipe_id]
+            C_e = C_primary[pipe_id]
+            sign = 1.0
+            if preferred_flow_sign is not None and pipe_id in preferred_flow_sign:
+                sign = 1.0 if preferred_flow_sign[pipe_id] >= 0 else -1.0
+            if sign >= 0:
+                lower[i] = C_e
+            else:
+                upper[i] = -C_e
         elif pipe_id in pipe_secondary_set:
             c_e = c_secondary[pipe_id]
             lower[i] = -c_e
@@ -280,14 +306,15 @@ def solve_single_node_min(
                 inflow[pipe.end_node] += q_e
             if pipe.start_node in outflow:
                 outflow[pipe.start_node] += q_e
-        return {j: inflow[j] - outflow[j] for j in junctions}
+        # Negative demand denotes consumption
+        return {j: outflow[j] - inflow[j] for j in junctions}
 
     def demand_ineq_fun(x: np.ndarray) -> np.ndarray:
         q = x[:n_q]
         d = demand_from_q(q)
         return np.array([d[j] for j in junctions], dtype=float)
 
-    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.zeros(n_h), ub=np.full(n_h, np.inf))
+    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.full(n_h, -np.inf), ub=np.zeros(n_h))
 
     if initial_guess is None:
         x0 = np.zeros(n_vars, dtype=float)
@@ -327,6 +354,115 @@ def solve_single_node_min(
         demands=d_sol,
         heads=h_sol,
         flows=q_sol,
+        max_violation=max_violation,
+        min_demand_viol=min_demand_viol,
+        success=bool(res.success),
+    )
+
+
+def solve_feasibility(
+    network: NetworkData,
+    sensor_heads: Dict[str, float],
+    pipe_primary: Iterable[str],
+    pipe_secondary: Iterable[str],
+    c_secondary: Dict[str, float],
+    C_primary: Dict[str, float],
+    pipe_resistances: Dict[str, float],
+    preferred_flow_sign: Optional[Dict[str, float]] = None,
+    initial_guess: Optional[SolverResult] = None,
+) -> FeasibilityResult:
+    _require_scipy()
+    from scipy.optimize import Bounds, NonlinearConstraint, minimize
+
+    reservoir_nodes = set(network.reservoirs.keys())
+    fixed_heads = dict(sensor_heads)
+    for res_id, res_node in network.reservoirs.items():
+        if res_id not in fixed_heads:
+            fixed_heads[res_id] = res_node.elevation_m
+
+    junctions, pipes = _build_index_maps(network, reservoir_nodes)
+    n_q = len(pipes)
+    n_h = len(junctions)
+    n_vars = n_q + n_h
+
+    lower = np.full(n_vars, -np.inf, dtype=float)
+    upper = np.full(n_vars, np.inf, dtype=float)
+
+    pipe_primary_set = set(pipe_primary)
+    pipe_secondary_set = set(pipe_secondary)
+    for i, pipe_id in enumerate(pipes):
+        if pipe_id in pipe_primary_set:
+            C_e = C_primary[pipe_id]
+            sign = 1.0
+            if preferred_flow_sign is not None and pipe_id in preferred_flow_sign:
+                sign = 1.0 if preferred_flow_sign[pipe_id] >= 0 else -1.0
+            if sign >= 0:
+                lower[i] = C_e
+            else:
+                upper[i] = -C_e
+        elif pipe_id in pipe_secondary_set:
+            c_e = c_secondary[pipe_id]
+            lower[i] = -c_e
+            upper[i] = c_e
+
+    bounds = Bounds(lower, upper)
+
+    def constraints_fun(x: np.ndarray) -> np.ndarray:
+        return _constraints_residuals(x, junctions, pipes, network, fixed_heads, pipe_resistances)
+
+    n_constraints = n_q + sum(1 for n in fixed_heads if n in junctions)
+    constraints = NonlinearConstraint(constraints_fun, lb=np.zeros(n_constraints), ub=np.zeros(n_constraints))
+
+    def demand_from_q(q: np.ndarray) -> Dict[str, float]:
+        inflow = {j: 0.0 for j in junctions}
+        outflow = {j: 0.0 for j in junctions}
+        for idx, pipe_id in enumerate(pipes):
+            pipe = network.pipes[pipe_id]
+            q_e = q[idx]
+            if pipe.end_node in inflow:
+                inflow[pipe.end_node] += q_e
+            if pipe.start_node in outflow:
+                outflow[pipe.start_node] += q_e
+        # Negative demand denotes consumption
+        return {j: outflow[j] - inflow[j] for j in junctions}
+
+    def demand_ineq_fun(x: np.ndarray) -> np.ndarray:
+        q = x[:n_q]
+        d = demand_from_q(q)
+        return np.array([d[j] for j in junctions], dtype=float)
+
+    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.full(n_h, -np.inf), ub=np.zeros(n_h))
+
+    if initial_guess is None:
+        x0 = np.zeros(n_vars, dtype=float)
+    else:
+        q0 = np.array([initial_guess.flows.get(pid, 0.0) for pid in pipes], dtype=float)
+        h0 = np.array([initial_guess.heads.get(j, 0.0) for j in junctions], dtype=float)
+        x0 = np.concatenate([q0, h0])
+
+    def obj(x: np.ndarray) -> float:
+        return float(np.sum(constraints_fun(x) ** 2))
+
+    res = minimize(
+        obj,
+        x0,
+        method="trust-constr",
+        constraints=[constraints, demand_ineq],
+        bounds=bounds,
+        options={"maxiter": 4000, "verbose": 0},
+    )
+
+    q_sol = {pipes[i]: float(res.x[i]) for i in range(n_q)}
+    h_sol = {junctions[i]: float(res.x[n_q + i]) for i in range(n_h)}
+    for node_id, head_val in fixed_heads.items():
+        h_sol[node_id] = float(head_val)
+
+    max_violation = float(np.max(np.abs(constraints_fun(res.x))))
+    min_demand_viol = float(np.min(demand_ineq_fun(res.x)))
+
+    return FeasibilityResult(
+        flows=q_sol,
+        heads=h_sol,
         max_violation=max_violation,
         min_demand_viol=min_demand_viol,
         success=bool(res.success),

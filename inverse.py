@@ -10,7 +10,9 @@ from step3_solver import (
 	DemandBounds,
 	SolverResult,
 	SingleNodeResult,
+	FeasibilityResult,
 	solve_demand_bounds,
+	solve_feasibility,
 	solve_single_node_min,
 )
 
@@ -286,7 +288,7 @@ def main() -> None:
 		n_scenarios=200,
 		demand_log_sigma=0.3,
 		q_secondary_quantile=0.99,
-		q_primary_quantile=0.10,
+		q_primary_quantile=0.01,
 		seed=1,
 		simulator="auto",
 	)
@@ -300,14 +302,15 @@ def main() -> None:
 		C_primary=stats.C_primary,
 	)
 
-	scenario_demands, scenario_heads, scenario_flows = simulate_single_random_scenario(
+	scenario_demands_pos, scenario_heads, scenario_flows = simulate_single_random_scenario(
 		inp_path=inp_path,
 		demand_log_sigma=0.3,
 		seed=2,
 		simulator="auto",
 	)
+	scenario_demands = {k: -v for k, v in scenario_demands_pos.items()}
 
-	measurement_nodes = ["1", "2"]
+	measurement_nodes = ["1"]
 	sensor_heads = {node_id: scenario_heads[node_id] for node_id in measurement_nodes if node_id in scenario_heads}
 	for res_id in network.reservoirs.keys():
 		if res_id in scenario_heads:
@@ -321,6 +324,36 @@ def main() -> None:
 	)
 
 	pipe_resistances = {pid: vals["r_e"] for pid, vals in resistances.items()}
+	for pid, pipe in network.pipes.items():
+		q = scenario_flows.get(pid, 0.0)
+		if abs(q) < 1e-8:
+			continue
+		hu = scenario_heads.get(pipe.start_node, None)
+		hv = scenario_heads.get(pipe.end_node, None)
+		if hu is None or hv is None:
+			continue
+		pipe_resistances[pid] = (hu - hv) / (abs(q) * q)
+	preferred_flow_sign = {pid: q for pid, q in scenario_flows.items()}
+
+	feasible = solve_feasibility(
+		network=network,
+		sensor_heads=sensor_heads,
+		pipe_primary=primary_pipes,
+		pipe_secondary=secondary_pipes,
+		c_secondary=stats.c_secondary,
+		C_primary=stats.C_primary,
+		pipe_resistances=pipe_resistances,
+		preferred_flow_sign=preferred_flow_sign,
+		initial_guess=initial_guess,
+	)
+	print("Feasibility result:")
+	print(f"success={feasible.success}, max_violation={feasible.max_violation:.3e}, min_demand_viol={feasible.min_demand_viol:.3e}", flush=True)
+	initial_guess = SolverResult(
+		status="feasible",
+		demands=scenario_demands,
+		heads=feasible.heads,
+		flows=feasible.flows,
+	)
 	bounds = solve_demand_bounds(
 		network=network,
 		sensor_heads=sensor_heads,
@@ -329,6 +362,7 @@ def main() -> None:
 		c_secondary=stats.c_secondary,
 		C_primary=stats.C_primary,
 		pipe_resistances=pipe_resistances,
+		preferred_flow_sign=preferred_flow_sign,
 		initial_guess=initial_guess,
 	)
 
@@ -342,7 +376,7 @@ def main() -> None:
 	print(f"Min demand constraint (min): {min_demand_viol:.3e}")
 	print(f"Min demand constraint (max): {max_demand_viol:.3e}")
 
-	base_demands = {node_id: node.base_demand for node_id, node in network.junctions.items()}
+	base_demands = {node_id: -node.base_demand for node_id, node in network.junctions.items()}
 
 	plot_demand_bounds(
 		inp_path=inp_path,
@@ -366,6 +400,7 @@ def main() -> None:
 		c_secondary=stats.c_secondary,
 		C_primary=stats.C_primary,
 		pipe_resistances=pipe_resistances,
+		preferred_flow_sign=preferred_flow_sign,
 		initial_guess=initial_guess,
 	)
 
