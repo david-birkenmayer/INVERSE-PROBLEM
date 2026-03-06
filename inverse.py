@@ -104,7 +104,7 @@ def plot_network(
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig("pipe_classes.png", dpi=200)
-	plt.show(block=True)
+	# plt.show(block=True)
 	plt.close(fig)
 
 
@@ -186,7 +186,7 @@ def plot_demand_bounds(
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig("demand_bounds.png", dpi=200)
-	plt.show(block=True)
+	# plt.show(block=True)
 	plt.close(fig)
 
 
@@ -262,7 +262,7 @@ def plot_single_solution(
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig("single_node_solution.png", dpi=200)
-	plt.show(block=True)
+	# plt.show(block=True)
 	plt.close(fig)
 
 
