@@ -1,8 +1,30 @@
 from typing import Dict, Iterable, Tuple
+import json
+import os
+from datetime import datetime
 
-from step1_io import load_alperovits_network, compute_pipe_resistances
+# Easy-to-change configuration
+WDN_NAME = "Alperovits"; MEASUREMENT_SITES = ["1", "2", "6", "5"]
+# WDN_NAME = "Kadu"; MEASUREMENT_SITES = ["10", "14", "24"]
+# WDN_NAME = "Anytown"; MEASUREMENT_SITES = ["20", "140"],
+
+PIPE_BOUNDS = True
+PIPE_BOUND_SAFENESS = 0.9  # in [0, 1], higher means looser bounds
+
+MULTI_STARTS = 10
+MULTI_START_NOISE = 0.05
+
+SOLVER = "ipopt"
+# SOLVER = "scipy"
+
+DEMAND_INTERVALS = False
+SINGLE_NODE_SOLUTION = False
+L2_RADIUS = True
+
+
+from step1_io import load_inp_network, compute_pipe_resistances
 from step2_estimation import (
-	estimate_capacity_from_inp,
+	simulate_random_demand_scenarios,
 	simulate_base_flows,
 	simulate_single_random_scenario,
 )
@@ -14,29 +36,46 @@ from step3_solver import (
 	solve_demand_bounds,
 	solve_feasibility,
 	solve_single_node_min,
+	solve_max_demand_distance,
+	solve_max_demand_distance_ipopt,
 )
 
 
-def _classify_pipes_by_flow(
-	base_flows: Dict[str, float],
-	primary_fraction: float = 0.3,
-) -> Tuple[Iterable[str], Iterable[str]]:
-	if not 0.0 < primary_fraction < 1.0:
-		raise ValueError("primary_fraction must be in (0, 1).")
-	sorted_pipes = sorted(base_flows.items(), key=lambda kv: abs(kv[1]), reverse=True)
-	cutoff = max(1, int(round(primary_fraction * len(sorted_pipes))))
-	primary = {pipe_id for pipe_id, _ in sorted_pipes[:cutoff]}
-	secondary = {pipe_id for pipe_id, _ in sorted_pipes[cutoff:]}
-	return primary, secondary
+def _compute_pipe_bounds_all(
+	flows_by_pipe: Dict[str, "np.ndarray"],
+	safeness: float,
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+	import numpy as np
+
+	if not 0.0 <= safeness <= 1.0:
+		raise ValueError("PIPE_BOUND_SAFENESS must be in [0, 1].")
+	alpha = (1.0 - safeness) / 2.0
+	low_q = alpha
+	high_q = 1.0 - alpha
+
+	c_bounds: Dict[str, float] = {}
+	C_bounds: Dict[str, float] = {}
+	for pipe_id, q in flows_by_pipe.items():
+		low = float(np.quantile(q, low_q))
+		high = float(np.quantile(q, high_q))
+		if low > high:
+			low, high = high, low
+		c_bounds[pipe_id] = low
+		C_bounds[pipe_id] = high
+	return c_bounds, C_bounds
+
+
+def _write_json(path: str, payload: Dict[str, object]) -> None:
+	with open(path, "w", encoding="utf-8") as f:
+		json.dump(payload, f, indent=2, sort_keys=True)
 
 
 def plot_network(
 	inp_path: str,
-	primary_pipes: Iterable[str],
-	secondary_pipes: Iterable[str],
 	base_flows: Dict[str, float],
-	c_secondary: Dict[str, float],
-	C_primary: Dict[str, float],
+	c_bounds: Dict[str, float],
+	C_bounds: Dict[str, float],
+	output_dir: str,
 ) -> None:
 	import matplotlib.pyplot as plt
 	import networkx as nx
@@ -52,21 +91,25 @@ def plot_network(
 		G.add_edge(pipe.start_node_name, pipe.end_node_name, key=pipe_name)
 
 	fig, ax = plt.subplots(figsize=(9, 7))
+	reservoir_nodes = [n for n in wn.reservoir_name_list if n in G.nodes]
 	nx.draw_networkx_nodes(G, pos, node_size=350, node_color="#f2f2f2", edgecolors="#333333", ax=ax)
 	nx.draw_networkx_labels(G, pos, font_size=9, ax=ax)
-
-	primary_set = set(primary_pipes)
-	secondary_set = set(secondary_pipes)
+	if reservoir_nodes:
+		nx.draw_networkx_nodes(G, pos, nodelist=reservoir_nodes, node_size=420, node_color="#90cdf4", node_shape="s", edgecolors="#1a365d", ax=ax)
 
 	primary_edges = []
 	secondary_edges = []
 	edge_to_pipe = {}
 	for pipe_name, pipe in wn.pipes():
+		cl = c_bounds.get(pipe_name, float("-inf"))
+		cu = C_bounds.get(pipe_name, float("inf"))
 		edge = (pipe.start_node_name, pipe.end_node_name)
 		edge_to_pipe[edge] = pipe_name
-		if pipe_name in primary_set:
+		if cl == float("-inf") or cu == float("inf"):
+			secondary_edges.append(edge)
+		elif cl * cu >= 0:
 			primary_edges.append(edge)
-		elif pipe_name in secondary_set:
+		else:
 			secondary_edges.append(edge)
 
 	nx.draw_networkx_edges(
@@ -78,6 +121,7 @@ def plot_network(
 		width=2.0,
 		ax=ax,
 	)
+
 	nx.draw_networkx_edges(
 		G,
 		pos,
@@ -90,22 +134,19 @@ def plot_network(
 		ax=ax,
 	)
 
-	for (u, v), pipe_id in edge_to_pipe.items():
+	for (u, v), pipe_name in edge_to_pipe.items():
 		x = (pos[u][0] + pos[v][0]) / 2.0
 		y = (pos[u][1] + pos[v][1]) / 2.0
-		q0 = base_flows.get(pipe_id, 0.0)
-		if pipe_id in primary_set:
-			Ce = C_primary.get(pipe_id, float("nan"))
-			label = f"q0={q0:.2f}\nC={Ce:.2f}"
-		else:
-			ce = c_secondary.get(pipe_id, float("nan"))
-			label = f"q0={q0:.2f}\nc={ce:.2f}"
+		q0 = base_flows.get(pipe_name, 0.0)
+		cl = c_bounds.get(pipe_name, float("-inf"))
+		cu = C_bounds.get(pipe_name, float("inf"))
+		label = f"q0={q0:.2f}\n[{cl:.2f}, {cu:.2f}]"
 		ax.text(x, y, label, fontsize=7, ha="center", va="center", color="#111111")
 
 	ax.set_title("Pipe classes, base flows, and capacity bounds")
 	ax.axis("off")
 	plt.tight_layout()
-	fig.savefig("pipe_classes.png", dpi=200)
+	fig.savefig(os.path.join(output_dir, "pipe_classes.png"), dpi=200)
 	plt.show(block=True)
 	plt.close(fig)
 
@@ -116,11 +157,12 @@ def plot_demand_bounds(
 	actual_demands: Dict[str, float],
 	bounds: DemandBounds,
 	base_flows: Dict[str, float],
-	c_secondary: Dict[str, float],
-	C_primary: Dict[str, float],
+	c_bounds: Dict[str, float],
+	C_bounds: Dict[str, float],
 	sensor_heads: Dict[str, float],
 	scenario_flows: Dict[str, float],
 	base_demands: Dict[str, float],
+	output_dir: str,
 ) -> None:
 	import matplotlib.pyplot as plt
 	import networkx as nx
@@ -138,9 +180,9 @@ def plot_demand_bounds(
 	fig, ax = plt.subplots(figsize=(9, 7))
 
 	measurement_set = set(measurement_nodes)
-	normal_nodes = [n for n in G.nodes if n not in measurement_set]
-	meas_nodes = [n for n in G.nodes if n in measurement_set]
-
+	reservoir_nodes = [n for n in wn.reservoir_name_list if n in G.nodes]
+	normal_nodes = [n for n in G.nodes if n not in measurement_set and n not in reservoir_nodes]
+	meas_nodes = [n for n in G.nodes if n in measurement_set and n not in reservoir_nodes]
 	nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_size=380, node_color="#f2f2f2", edgecolors="#333333", ax=ax)
 	nx.draw_networkx_nodes(G, pos, nodelist=meas_nodes, node_size=420, node_color="#90cdf4", node_shape="h", edgecolors="#1a365d", ax=ax)
 	nx.draw_networkx_edges(
@@ -153,6 +195,8 @@ def plot_demand_bounds(
 		arrowsize=12,
 		ax=ax,
 	)
+	if reservoir_nodes:
+		nx.draw_networkx_nodes(G, pos, nodelist=reservoir_nodes, node_size=420, node_color="#90cdf4", node_shape="s", edgecolors="#1a365d", ax=ax)
 	nx.draw_networkx_labels(G, pos, font_size=9, ax=ax)
 
 	for node_id in wn.junction_name_list:
@@ -178,16 +222,15 @@ def plot_demand_bounds(
 		y = (pos[u][1] + pos[v][1]) / 2.0
 		q0 = base_flows.get(pipe_name, 0.0)
 		qs = scenario_flows.get(pipe_name, 0.0)
-		if pipe_name in C_primary:
-			label = f"q0={q0:.2f}\nq*={qs:.2f}\nC={C_primary[pipe_name]:.2f}"
-		else:
-			label = f"q0={q0:.2f}\nq*={qs:.2f}\nc={c_secondary.get(pipe_name, float('nan')):.2f}"
+		cl = c_bounds.get(pipe_name, float("-inf"))
+		cu = C_bounds.get(pipe_name, float("inf"))
+		label = f"q0={q0:.2f}\nq*={qs:.2f}\n[{cl:.2f}, {cu:.2f}]"
 		ax.text(x, y + 120, label, fontsize=7, ha="center", va="bottom", color="#111111")
 
 	ax.set_title("Demand bounds vs actual demands")
 	ax.axis("off")
 	plt.tight_layout()
-	fig.savefig("demand_bounds.png", dpi=200)
+	fig.savefig(os.path.join(output_dir, "demand_bounds.png"), dpi=200)
 	plt.show(block=True)
 	plt.close(fig)
 
@@ -196,8 +239,9 @@ def plot_single_solution(
 	inp_path: str,
 	measurement_nodes: Iterable[str],
 	solution: SingleNodeResult,
-	c_secondary: Dict[str, float],
-	C_primary: Dict[str, float],
+	c_bounds: Dict[str, float],
+	C_bounds: Dict[str, float],
+	output_dir: str,
 ) -> None:
 	import matplotlib.pyplot as plt
 	import networkx as nx
@@ -219,11 +263,14 @@ def plot_single_solution(
 	fig, ax = plt.subplots(figsize=(9, 7))
 
 	measurement_set = set(measurement_nodes)
-	normal_nodes = [n for n in G.nodes if n not in measurement_set]
-	meas_nodes = [n for n in G.nodes if n in measurement_set]
+	reservoir_nodes = [n for n in wn.reservoir_name_list if n in G.nodes]
+	normal_nodes = [n for n in G.nodes if n not in measurement_set and n not in reservoir_nodes]
+	meas_nodes = [n for n in G.nodes if n in measurement_set and n not in reservoir_nodes]
 
 	nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_size=380, node_color="#f2f2f2", edgecolors="#333333", ax=ax)
 	nx.draw_networkx_nodes(G, pos, nodelist=meas_nodes, node_size=420, node_color="#90cdf4", node_shape="h", edgecolors="#1a365d", ax=ax)
+	if reservoir_nodes:
+		nx.draw_networkx_nodes(G, pos, nodelist=reservoir_nodes, node_size=420, node_color="#90cdf4", node_shape="s", edgecolors="#1a365d", ax=ax)
 	nx.draw_networkx_edges(
 		G,
 		pos,
@@ -254,23 +301,159 @@ def plot_single_solution(
 		x = (pos[u][0] + pos[v][0]) / 2.0
 		y = (pos[u][1] + pos[v][1]) / 2.0
 		q_abs = abs(q)
-		if pipe_name in C_primary:
-			label = f"q={q_abs:.2f}\nC={C_primary[pipe_name]:.2f}"
-		else:
-			label = f"q={q_abs:.2f}\nc={c_secondary.get(pipe_name, float('nan')):.2f}"
+		cl = c_bounds.get(pipe_name, float("-inf"))
+		cu = C_bounds.get(pipe_name, float("inf"))
+		label = f"q={q_abs:.2f}\n[{cl:.2f}, {cu:.2f}]"
 		ax.text(x, y + 120, label, fontsize=7, ha="center", va="bottom", color="#111111")
 
 	ax.set_title(f"Single-node min solution for node {solution.node_id}")
 	ax.axis("off")
 	plt.tight_layout()
-	fig.savefig("single_node_solution.png", dpi=200)
+	fig.savefig(os.path.join(output_dir, "single_node_solution.png"), dpi=200)
+	plt.show(block=True)
+	plt.close(fig)
+
+
+def plot_demand_distance(
+	inp_path: str,
+	measurement_nodes: Iterable[str],
+	demands_a: Dict[str, float],
+	demands_b: Dict[str, float],
+	heads_a: Dict[str, float],
+	heads_b: Dict[str, float],
+	flows_a: Dict[str, float],
+	flows_b: Dict[str, float],
+	radius: float,
+	output_dir: str,
+	c_bounds: Dict[str, float],
+	C_bounds: Dict[str, float],
+) -> None:
+	import matplotlib.pyplot as plt
+	from matplotlib.offsetbox import AnnotationBbox, TextArea, HPacker, VPacker
+	import networkx as nx
+	import wntr
+
+	wn = wntr.network.WaterNetworkModel(inp_path)
+	pos = {name: (node.coordinates[0], node.coordinates[1]) for name, node in wn.nodes()}
+
+	G = nx.Graph()
+	for name, node in wn.nodes():
+		G.add_node(name)
+	for pipe_name, pipe in wn.pipes():
+		G.add_edge(pipe.start_node_name, pipe.end_node_name)
+
+	fig, ax = plt.subplots(figsize=(9, 7))
+
+	measurement_set = set(measurement_nodes)
+	reservoir_nodes = [n for n in wn.reservoir_name_list if n in G.nodes]
+	normal_nodes = [n for n in G.nodes if n not in measurement_set and n not in reservoir_nodes]
+	meas_nodes = [n for n in G.nodes if n in measurement_set and n not in reservoir_nodes]
+
+	nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_size=380, node_color="#f2f2f2", edgecolors="#333333", ax=ax)
+	nx.draw_networkx_nodes(G, pos, nodelist=meas_nodes, node_size=420, node_color="#90cdf4", node_shape="h", edgecolors="#1a365d", ax=ax)
+	if reservoir_nodes:
+		nx.draw_networkx_nodes(G, pos, nodelist=reservoir_nodes, node_size=420, node_color="#90cdf4", node_shape="s", edgecolors="#1a365d", ax=ax)
+	# Color edges by direction agreement between A and B
+	edge_colors = []
+	for pipe_name, pipe in wn.pipes():
+		qa = flows_a.get(pipe_name, 0.0)
+		qb = flows_b.get(pipe_name, 0.0)
+		if qa == 0.0 or qb == 0.0:
+			edge_colors.append("#2b6cb0")
+		elif (qa > 0) == (qb > 0):
+			edge_colors.append("#000000")
+		else:
+			edge_colors.append("#2b6cb0")
+	nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=1.6, ax=ax)
+	nx.draw_networkx_labels(G, pos, font_size=9, ax=ax)
+
+	def _colored_inline(ax, x, y, segments, colors):
+		areas = [TextArea(text, textprops={"color": color, "fontsize": 7})
+			for text, color in zip(segments, colors)]
+		box = HPacker(children=areas, align="center", pad=0, sep=2)
+		ab = AnnotationBbox(
+			box,
+			(x, y),
+			frameon=True,
+			bboxprops={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
+		)
+		ax.add_artist(ab)
+
+	def _colored_two_lines(ax, x, y, segments_top, colors_top, segments_bottom, colors_bottom):
+		areas_top = [TextArea(text, textprops={"color": color, "fontsize": 7})
+			for text, color in zip(segments_top, colors_top)]
+		areas_bottom = [TextArea(text, textprops={"color": color, "fontsize": 7})
+			for text, color in zip(segments_bottom, colors_bottom)]
+		line_top = HPacker(children=areas_top, align="center", pad=0, sep=2)
+		line_bottom = HPacker(children=areas_bottom, align="center", pad=0, sep=2)
+		box = VPacker(children=[line_top, line_bottom], align="center", pad=0, sep=1)
+		ab = AnnotationBbox(
+			box,
+			(x, y),
+			frameon=True,
+			bboxprops={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
+		)
+		ax.add_artist(ab)
+
+	for node_id in wn.junction_name_list:
+		x, y = pos[node_id]
+		da = demands_a.get(node_id, 0.0)
+		db = demands_b.get(node_id, 0.0)
+		ha = heads_a.get(node_id, float("nan"))
+		hb = heads_b.get(node_id, float("nan"))
+		green = "#2f855a"
+		segments_d = ["d = ", f"{da:.2f}", " | ", f"{db:.2f}"]
+		colors_d = ["#111111", "#2b6cb0", "#111111", green]
+		segments_h = ["h = ", f"{ha:.2f}", " | ", f"{hb:.2f}"]
+		colors_h = ["#111111", "#2b6cb0", "#111111", green]
+		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
+
+	for node_id in wn.reservoir_name_list:
+		if node_id not in pos:
+			continue
+		x, y = pos[node_id]
+		ha = heads_a.get(node_id, float("nan"))
+		hb = heads_b.get(node_id, float("nan"))
+		da = -sum(demands_a.values())
+		db = -sum(demands_b.values())
+		green = "#2f855a"
+		segments_d = ["d = ", f"{da:.2f}", " | ", f"{db:.2f}"]
+		colors_d = ["#111111", "#2b6cb0", "#111111", green]
+		segments_h = ["h = ", f"{ha:.2f}", " | ", f"{hb:.2f}"]
+		colors_h = ["#111111", "#2b6cb0", "#111111", green]
+		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
+
+	for pipe_name, pipe in wn.pipes():
+		u = pipe.start_node_name
+		v = pipe.end_node_name
+		x = (pos[u][0] + pos[v][0]) / 2.0
+		y = (pos[u][1] + pos[v][1]) / 2.0
+		qa = flows_a.get(pipe_name, 0.0)
+		qb = flows_b.get(pipe_name, 0.0)
+		green = "#2f855a"
+		segments_q = ["q = ", f"{qa:.2f}", " | ", f"{qb:.2f}"]
+		colors_q = ["#111111", "#2b6cb0", "#111111", green]
+		cl = c_bounds.get(pipe_name, float("-inf"))
+		cu = C_bounds.get(pipe_name, float("inf"))
+		if cl != float("-inf") or cu != float("inf"):
+			segments_b = ["[", f"{cl:.2f}", ", ", f"{cu:.2f}", "]"]
+			colors_b = ["#111111", "#111111", "#111111", "#111111", "#111111"]
+			_colored_two_lines(ax, x, y + 150, segments_q, colors_q, segments_b, colors_b)
+		else:
+			_colored_inline(ax, x, y + 150, segments_q, colors_q)
+
+	ax.set_title(f"Max demand-distance solution (radius={radius:.3f})")
+	ax.axis("off")
+	plt.tight_layout()
+	fig.savefig(os.path.join(output_dir, "demand_distance.png"), dpi=200)
 	plt.show(block=True)
 	plt.close(fig)
 
 
 def main() -> None:
-	inp_path = "./wdn/Alperovits.inp"
-	network = load_alperovits_network()
+	inp_path = f"./wdn/{WDN_NAME}.inp"
+	wdn_name = WDN_NAME
+	network = load_inp_network(inp_path)
 	resistances = compute_pipe_resistances(network)
 	print(f"Loaded {len(network.nodes)} nodes and {len(network.pipes)} pipes.")
 	first_pipe = next(iter(resistances.values()), None)
@@ -278,29 +461,19 @@ def main() -> None:
 		print("Example resistance:", first_pipe)
 
 	base_flows = simulate_base_flows(inp_path=inp_path)
-	primary_pipes, secondary_pipes = _classify_pipes_by_flow(base_flows, primary_fraction=0.3)
-
-	stats = estimate_capacity_from_inp(
+	flows_by_pipe = simulate_random_demand_scenarios(
 		inp_path=inp_path,
-		network=network,
-		pipe_set_primary=primary_pipes,
-		pipe_set_secondary=secondary_pipes,
 		n_scenarios=200,
 		demand_log_sigma=0.3,
-		q_secondary_quantile=0.99,
-		q_primary_quantile=0.01,
 		seed=1,
 		simulator="auto",
 	)
 
-	plot_network(
-		inp_path=inp_path,
-		primary_pipes=primary_pipes,
-		secondary_pipes=secondary_pipes,
-		base_flows=base_flows,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
-	)
+	if PIPE_BOUNDS:
+		c_bounds, C_bounds = _compute_pipe_bounds_all(flows_by_pipe, PIPE_BOUND_SAFENESS)
+	else:
+		c_bounds = {}
+		C_bounds = {}
 
 	scenario_demands_pos, scenario_heads, scenario_flows = simulate_single_random_scenario(
 		inp_path=inp_path,
@@ -308,9 +481,46 @@ def main() -> None:
 		seed=2,
 		simulator="auto",
 	)
-	scenario_demands = {k: -v for k, v in scenario_demands_pos.items()}
+	scenario_demands = {k: v for k, v in scenario_demands_pos.items()}
 
-	measurement_nodes = ["1"]
+	measurement_nodes = [str(x) for x in MEASUREMENT_SITES]
+	measurement_tag = "_".join(measurement_nodes)
+	timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+	pipe_tag = "B" if PIPE_BOUNDS else "NB"
+	output_dir = os.path.join("data", f"{wdn_name}-{pipe_tag}-{measurement_tag}-{timestamp}")
+	os.makedirs(output_dir, exist_ok=True)
+	print(f"Saving results to: {output_dir}")
+	_write_json(
+		os.path.join(output_dir, "metadata.json"),
+		{
+			"WDN_NAME": WDN_NAME,
+			"MEASUREMENT_SITES": measurement_nodes,
+			"PIPE_BOUNDS": PIPE_BOUNDS,
+			"PIPE_BOUND_SAFENESS": PIPE_BOUND_SAFENESS,
+			"SOLVER": SOLVER,
+			"DEMAND_INTERVALS": DEMAND_INTERVALS,
+			"SINGLE_NODE_SOLUTION": SINGLE_NODE_SOLUTION,
+			"L2_RADIUS": L2_RADIUS,
+			"MULTI_STARTS": MULTI_STARTS,
+			"MULTI_START_NOISE": MULTI_START_NOISE,
+			"timestamp": timestamp,
+			"output_dir": output_dir,
+		},
+	)
+	if PIPE_BOUNDS:
+		_write_json(
+			os.path.join(output_dir, "c_bounds.json"),
+			{"c_bounds": c_bounds, "C_bounds": C_bounds},
+		)
+
+	plot_network(
+		inp_path=inp_path,
+		base_flows=base_flows,
+		c_bounds=c_bounds,
+		C_bounds=C_bounds,
+		output_dir=output_dir,
+	)
+
 	sensor_heads = {node_id: scenario_heads[node_id] for node_id in measurement_nodes if node_id in scenario_heads}
 	for res_id in network.reservoirs.keys():
 		if res_id in scenario_heads:
@@ -333,17 +543,33 @@ def main() -> None:
 		if hu is None or hv is None:
 			continue
 		pipe_resistances[pid] = (hu - hv) / (abs(q) * q)
+
+	reservoir_node = next(iter(network.reservoirs.keys()), None)
+	reservoir_outflow = 0.0
+	if reservoir_node is not None:
+		for pid, pipe in network.pipes.items():
+			q = scenario_flows.get(pid, 0.0)
+			if pipe.start_node == reservoir_node:
+				reservoir_outflow += q
+			if pipe.end_node == reservoir_node:
+				reservoir_outflow -= q
 	preferred_flow_sign = {pid: q for pid, q in scenario_flows.items()}
 
+	reservoir_head = scenario_heads.get(reservoir_node, None) if reservoir_node is not None else None
 	feasible = solve_feasibility(
 		network=network,
 		sensor_heads=sensor_heads,
-		pipe_primary=primary_pipes,
-		pipe_secondary=secondary_pipes,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
+		pipe_primary=set(),
+		pipe_secondary=set(),
+		c_secondary={},
+		C_primary={},
 		pipe_resistances=pipe_resistances,
 		preferred_flow_sign=preferred_flow_sign,
+		energy_head=reservoir_head,
+		reservoir_node=reservoir_node,
+		reservoir_outflow=reservoir_outflow,
+		c_bounds=c_bounds if PIPE_BOUNDS else None,
+		C_bounds=C_bounds if PIPE_BOUNDS else None,
 		initial_guess=initial_guess,
 	)
 	print("Feasibility result:")
@@ -354,76 +580,232 @@ def main() -> None:
 		heads=feasible.heads,
 		flows=feasible.flows,
 	)
-	bounds = solve_demand_bounds(
-		network=network,
-		sensor_heads=sensor_heads,
-		pipe_primary=primary_pipes,
-		pipe_secondary=secondary_pipes,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
-		pipe_resistances=pipe_resistances,
-		preferred_flow_sign=preferred_flow_sign,
-		initial_guess=initial_guess,
-	)
 
-	max_min_violation = max(v["min_violation"] for v in bounds.diagnostics.values())
-	max_max_violation = max(v["max_violation"] for v in bounds.diagnostics.values())
-	min_demand_viol = min(v["min_demand_viol"] for v in bounds.diagnostics.values())
-	max_demand_viol = min(v["max_demand_viol"] for v in bounds.diagnostics.values())
-	print(f"Solver status: {bounds.status}")
-	print(f"Max constraint violation (min): {max_min_violation:.3e}")
-	print(f"Max constraint violation (max): {max_max_violation:.3e}")
-	print(f"Min demand constraint (min): {min_demand_viol:.3e}")
-	print(f"Min demand constraint (max): {max_demand_viol:.3e}")
+	if DEMAND_INTERVALS:
+		bounds = solve_demand_bounds(
+			network=network,
+			sensor_heads=sensor_heads,
+			pipe_primary=set(),
+			pipe_secondary=set(),
+			c_secondary={},
+			C_primary={},
+			pipe_resistances=pipe_resistances,
+			preferred_flow_sign=preferred_flow_sign,
+			energy_head=reservoir_head,
+			reservoir_node=reservoir_node,
+			reservoir_outflow=reservoir_outflow,
+			c_bounds=c_bounds if PIPE_BOUNDS else None,
+			C_bounds=C_bounds if PIPE_BOUNDS else None,
+			initial_guess=initial_guess,
+		)
 
-	base_demands = {node_id: -node.base_demand for node_id, node in network.junctions.items()}
+		max_min_violation = max(v["min_violation"] for v in bounds.diagnostics.values())
+		max_max_violation = max(v["max_violation"] for v in bounds.diagnostics.values())
+		min_demand_viol = min(v["min_demand_viol"] for v in bounds.diagnostics.values())
+		max_demand_viol = min(v["max_demand_viol"] for v in bounds.diagnostics.values())
+		print(f"Solver status: {bounds.status}")
+		print(f"Max constraint violation (min): {max_min_violation:.3e}")
+		print(f"Max constraint violation (max): {max_max_violation:.3e}")
+		print(f"Min demand constraint (min): {min_demand_viol:.3e}")
+		print(f"Min demand constraint (max): {max_demand_viol:.3e}")
 
-	plot_demand_bounds(
-		inp_path=inp_path,
-		measurement_nodes=measurement_nodes,
-		actual_demands=scenario_demands,
-		bounds=bounds,
-		base_flows=base_flows,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
-		sensor_heads=sensor_heads,
-		scenario_flows=scenario_flows,
-		base_demands=base_demands,
-	)
+		base_demands = {node_id: node.base_demand for node_id, node in network.junctions.items()}
 
-	single = solve_single_node_min(
-		network=network,
-		target_node="5",
-		sensor_heads=sensor_heads,
-		pipe_primary=primary_pipes,
-		pipe_secondary=secondary_pipes,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
-		pipe_resistances=pipe_resistances,
-		preferred_flow_sign=preferred_flow_sign,
-		initial_guess=initial_guess,
-	)
+		plot_demand_bounds(
+			inp_path=inp_path,
+			measurement_nodes=measurement_nodes,
+			actual_demands=scenario_demands,
+			bounds=bounds,
+			base_flows=base_flows,
+			c_bounds=c_bounds,
+			C_bounds=C_bounds,
+			sensor_heads=sensor_heads,
+			scenario_flows=scenario_flows,
+			base_demands=base_demands,
+			output_dir=output_dir,
+		)
+		res_demand = -sum(scenario_demands.values())
+		_write_json(
+			os.path.join(output_dir, "demand_bounds.json"),
+			{
+				"demands_actual": {**scenario_demands, str(reservoir_node): res_demand} if reservoir_node else scenario_demands,
+				"demands_min": bounds.d_min,
+				"demands_max": bounds.d_max,
+				"heads_fixed": sensor_heads,
+				"flows_scenario": scenario_flows,
+			},
+		)
 
-	print("Single-node min result:")
-	print(f"node={single.node_id}, success={single.success}")
-	print(f"max_violation={single.max_violation:.3e}, min_demand_viol={single.min_demand_viol:.3e}")
-	print("Demands:")
-	for k in sorted(single.demands.keys()):
-		print(f"  {k}: {single.demands[k]:.6f}")
-	print("Heads:")
-	for k in sorted(single.heads.keys()):
-		print(f"  {k}: {single.heads[k]:.6f}")
-	print("Flows:")
-	for k in sorted(single.flows.keys()):
-		print(f"  {k}: {single.flows[k]:.6f}")
+	if SINGLE_NODE_SOLUTION:
+		single = solve_single_node_min(
+			network=network,
+			target_node="5",
+			sensor_heads=sensor_heads,
+			pipe_primary=set(),
+			pipe_secondary=set(),
+			c_secondary={},
+			C_primary={},
+			pipe_resistances=pipe_resistances,
+			preferred_flow_sign=preferred_flow_sign,
+			energy_head=reservoir_head,
+			reservoir_node=reservoir_node,
+			reservoir_outflow=reservoir_outflow,
+			c_bounds=c_bounds if PIPE_BOUNDS else None,
+			C_bounds=C_bounds if PIPE_BOUNDS else None,
+			initial_guess=initial_guess,
+		)
 
-	plot_single_solution(
-		inp_path=inp_path,
-		measurement_nodes=measurement_nodes,
-		solution=single,
-		c_secondary=stats.c_secondary,
-		C_primary=stats.C_primary,
-	)
+		print("Single-node min result:")
+		print(f"node={single.node_id}, success={single.success}")
+		print(f"max_violation={single.max_violation:.3e}, min_demand_viol={single.min_demand_viol:.3e}")
+		print("Demands:")
+		for k in sorted(single.demands.keys()):
+			print(f"  {k}: {single.demands[k]:.6f}")
+		print("Heads:")
+		for k in sorted(single.heads.keys()):
+			print(f"  {k}: {single.heads[k]:.6f}")
+		print("Flows:")
+		for k in sorted(single.flows.keys()):
+			print(f"  {k}: {single.flows[k]:.6f}")
+
+		plot_single_solution(
+			inp_path=inp_path,
+			measurement_nodes=measurement_nodes,
+			solution=single,
+			c_bounds=c_bounds,
+			C_bounds=C_bounds,
+			output_dir=output_dir,
+		)
+		res_demand = -sum(single.demands.values())
+		_write_json(
+			os.path.join(output_dir, "single_node_solution.json"),
+			{
+				"demands": {**single.demands, str(reservoir_node): res_demand} if reservoir_node else single.demands,
+				"heads": single.heads,
+				"flows": single.flows,
+				"max_violation": single.max_violation,
+				"min_demand_viol": single.min_demand_viol,
+			},
+		)
+
+	if L2_RADIUS:
+		import numpy as np
+
+		solver_mode = SOLVER
+		if SOLVER == "ipopt":
+			try:
+				import pyomo.environ as pyo
+
+				if not pyo.SolverFactory("ipopt").available(False):
+					print("WARNING: IPOPT executable not found; falling back to SciPy.")
+					solver_mode = "scipy"
+			except Exception as exc:
+				print(f"WARNING: IPOPT unavailable ({exc}); falling back to SciPy.")
+				solver_mode = "scipy"
+
+		rng = np.random.default_rng(0)
+		runs = []
+		best = None
+		unique_radii = set()
+
+		for run_idx in range(max(1, MULTI_STARTS)):
+			q0 = {k: float(v) for k, v in initial_guess.flows.items()}
+			h0 = {k: float(v) for k, v in initial_guess.heads.items()}
+			if MULTI_STARTS > 1:
+				for k in q0:
+					q0[k] = q0[k] + MULTI_START_NOISE * rng.standard_normal()
+				for k in h0:
+					h0[k] = h0[k] + MULTI_START_NOISE * rng.standard_normal()
+
+			run_guess = SolverResult(status="ms", demands=initial_guess.demands, heads=h0, flows=q0)
+			if solver_mode == "ipopt":
+				distance_res = solve_max_demand_distance_ipopt(
+					network=network,
+					sensor_heads=sensor_heads,
+					pipe_resistances=pipe_resistances,
+					c_bounds=c_bounds if PIPE_BOUNDS else None,
+					C_bounds=C_bounds if PIPE_BOUNDS else None,
+					reservoir_node=reservoir_node,
+					reservoir_outflow=reservoir_outflow,
+					initial_guess=run_guess,
+				)
+			else:
+				distance_res = solve_max_demand_distance(
+					network=network,
+					sensor_heads=sensor_heads,
+					pipe_resistances=pipe_resistances,
+					c_bounds=c_bounds if PIPE_BOUNDS else None,
+					C_bounds=C_bounds if PIPE_BOUNDS else None,
+					reservoir_node=reservoir_node,
+					reservoir_outflow=reservoir_outflow,
+					initial_guess=run_guess,
+				)
+			radius = 0.0
+			for node_id in network.junctions.keys():
+				da = distance_res.demands_a.get(node_id, 0.0)
+				db = distance_res.demands_b.get(node_id, 0.0)
+				radius += (da - db) ** 2
+			radius = radius ** 0.5
+
+			runs.append(
+				{
+					"run": run_idx,
+					"radius": radius,
+					"success": distance_res.success,
+					"max_violation": distance_res.max_violation,
+					"min_demand_viol": distance_res.min_demand_viol,
+					"start_flows": q0,
+					"start_heads": h0,
+				}
+			)
+			unique_radii.add(round(radius, 6))
+
+			if best is None or radius > best[0]:
+				best = (radius, distance_res)
+
+		best_radius, best_res = best
+		print("Demand distance result:")
+		print(f"best radius: {best_radius:.6f}")
+		print(f"unique local optima (by radius): {len(unique_radii)}")
+
+		plot_demand_distance(
+			inp_path=inp_path,
+			measurement_nodes=measurement_nodes,
+			demands_a=best_res.demands_a,
+			demands_b=best_res.demands_b,
+			heads_a=best_res.heads_a,
+			heads_b=best_res.heads_b,
+			flows_a=best_res.flows_a,
+			flows_b=best_res.flows_b,
+			radius=best_radius,
+			output_dir=output_dir,
+			c_bounds=c_bounds,
+			C_bounds=C_bounds,
+		)
+		res_demand_a = -sum(best_res.demands_a.values())
+		res_demand_b = -sum(best_res.demands_b.values())
+		_write_json(
+			os.path.join(output_dir, "demand_distance.json"),
+			{
+				"demands_a": {**best_res.demands_a, str(reservoir_node): res_demand_a} if reservoir_node else best_res.demands_a,
+				"demands_b": {**best_res.demands_b, str(reservoir_node): res_demand_b} if reservoir_node else best_res.demands_b,
+				"heads_a": best_res.heads_a,
+				"heads_b": best_res.heads_b,
+				"flows_a": best_res.flows_a,
+				"flows_b": best_res.flows_b,
+				"radius": best_radius,
+				"max_violation": best_res.max_violation,
+				"min_demand_viol": best_res.min_demand_viol,
+			},
+		)
+		_write_json(
+			os.path.join(output_dir, "demand_distance_multistart.json"),
+			{
+				"runs": runs,
+				"unique_local_optima": len(unique_radii),
+				"best_radius": best_radius,
+			},
+		)
 
 
 if __name__ == "__main__":

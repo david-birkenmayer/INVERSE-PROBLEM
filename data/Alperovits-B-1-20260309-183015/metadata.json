@@ -1,0 +1,15 @@
+{
+  "DEMAND_INTERVALS": false,
+  "L2_RADIUS": true,
+  "MEASUREMENT_SITES": [
+    "1"
+  ],
+  "MULTI_STARTS": 10,
+  "MULTI_START_NOISE": 0.05,
+  "PIPE_BOUNDS": true,
+  "PIPE_BOUND_SAFENESS": 0.8,
+  "SINGLE_NODE_SOLUTION": false,
+  "WDN_NAME": "Alperovits",
+  "output_dir": "data/Alperovits-B-1-20260309-183015",
+  "timestamp": "20260309-183015"
+}
