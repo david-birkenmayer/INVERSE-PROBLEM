@@ -1,0 +1,20 @@
+{
+  "DEMAND_INTERVALS": false,
+  "L2_RADIUS": true,
+  "MEASUREMENT_SITES": [
+    "1",
+    "2",
+    "6",
+    "5",
+    "4"
+  ],
+  "MULTI_STARTS": 10,
+  "MULTI_START_NOISE": 0.05,
+  "PIPE_BOUNDS": false,
+  "PIPE_BOUND_SAFENESS": 0.9,
+  "SINGLE_NODE_SOLUTION": false,
+  "SOLVER": "ipopt",
+  "WDN_NAME": "Alperovits",
+  "output_dir": "data/Alperovits-NB-1_2_6_5_4-20260310-103721",
+  "timestamp": "20260310-103721"
+}

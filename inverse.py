@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 # Easy-to-change configuration
-WDN_NAME = "Alperovits"; MEASUREMENT_SITES = ["1", "2", "6", "5"]
+WDN_NAME = "Alperovits"; MEASUREMENT_SITES = [1, 4, 3, 2]
 # WDN_NAME = "Kadu"; MEASUREMENT_SITES = ["10", "14", "24"]
 # WDN_NAME = "Anytown"; MEASUREMENT_SITES = ["20", "140"],
 
@@ -14,12 +14,18 @@ PIPE_BOUND_SAFENESS = 0.9  # in [0, 1], higher means looser bounds
 MULTI_STARTS = 10
 MULTI_START_NOISE = 0.05
 
-SOLVER = "ipopt"
+# SOLVER = "ipopt"
+SOLVER = "global"
 # SOLVER = "scipy"
+GLOBAL_SOLVER = "couenne"  # e.g., "couenne", "scip", "baron" (if installed)
 
 DEMAND_INTERVALS = False
 SINGLE_NODE_SOLUTION = False
-L2_RADIUS = True
+RADIUS = True
+NORM = 2  # positive int/float, or float("inf") for infinity norm
+DEMAND_LB = 1e-6  # enforce strictly positive junction demands
+USE_RESERVOIR_OUTFLOW_CONSTRAINT = True  # fix reservoir demand via net outflow
+FIX_TOTAL_DEMAND = True  # anchor sum of demands to scenario total
 
 
 from step1_io import load_inp_network, compute_pipe_resistances
@@ -140,7 +146,7 @@ def plot_network(
 		q0 = base_flows.get(pipe_name, 0.0)
 		cl = c_bounds.get(pipe_name, float("-inf"))
 		cu = C_bounds.get(pipe_name, float("inf"))
-		label = f"q0={q0:.2f}\n[{cl:.2f}, {cu:.2f}]"
+		label = f"q0={q0:.4f}\n[{cl:.4f}, {cu:.4f}]"
 		ax.text(x, y, label, fontsize=7, ha="center", va="center", color="#111111")
 
 	ax.set_title("Pipe classes, base flows, and capacity bounds")
@@ -205,7 +211,7 @@ def plot_demand_bounds(
 		dmin = bounds.d_min.get(node_id, float("nan"))
 		dmax = bounds.d_max.get(node_id, float("nan"))
 		d0 = base_demands.get(node_id, 0.0)
-		label = f"d*={actual:.2f}\n[{dmin:.2f}, {dmax:.2f}]\nd0={d0:.2f}"
+		label = f"d*={actual:.4f}\n[{dmin:.4f}, {dmax:.4f}]\nd0={d0:.4f}"
 		ax.text(x, y - 180, label, fontsize=7, ha="center", va="top", color="#111111")
 
 	for node_id in wn.reservoir_name_list:
@@ -213,7 +219,7 @@ def plot_demand_bounds(
 			continue
 		x, y = pos[node_id]
 		head = sensor_heads.get(node_id, float("nan"))
-		ax.text(x, y - 180, f"h={head:.2f}", fontsize=7, ha="center", va="top", color="#111111")
+		ax.text(x, y - 180, f"h={head:.4f}", fontsize=7, ha="center", va="top", color="#111111")
 
 	for pipe_name, pipe in wn.pipes():
 		u = pipe.start_node_name
@@ -224,7 +230,7 @@ def plot_demand_bounds(
 		qs = scenario_flows.get(pipe_name, 0.0)
 		cl = c_bounds.get(pipe_name, float("-inf"))
 		cu = C_bounds.get(pipe_name, float("inf"))
-		label = f"q0={q0:.2f}\nq*={qs:.2f}\n[{cl:.2f}, {cu:.2f}]"
+		label = f"q0={q0:.4f}\nq*={qs:.4f}\n[{cl:.4f}, {cu:.4f}]"
 		ax.text(x, y + 120, label, fontsize=7, ha="center", va="bottom", color="#111111")
 
 	ax.set_title("Demand bounds vs actual demands")
@@ -287,7 +293,7 @@ def plot_single_solution(
 		x, y = pos[node_id]
 		d = solution.demands.get(node_id, 0.0)
 		h = solution.heads.get(node_id, float("nan"))
-		label = f"d={d:.2f}\nh={h:.2f}"
+		label = f"d={d:.4f}\nh={h:.4f}"
 		ax.text(x, y - 180, label, fontsize=7, ha="center", va="top", color="#111111")
 
 	for pipe_name, pipe in wn.pipes():
@@ -303,7 +309,7 @@ def plot_single_solution(
 		q_abs = abs(q)
 		cl = c_bounds.get(pipe_name, float("-inf"))
 		cu = C_bounds.get(pipe_name, float("inf"))
-		label = f"q={q_abs:.2f}\n[{cl:.2f}, {cu:.2f}]"
+		label = f"q={q_abs:.4f}\n[{cl:.4f}, {cu:.4f}]"
 		ax.text(x, y + 120, label, fontsize=7, ha="center", va="bottom", color="#111111")
 
 	ax.set_title(f"Single-node min solution for node {solution.node_id}")
@@ -324,6 +330,8 @@ def plot_demand_distance(
 	flows_a: Dict[str, float],
 	flows_b: Dict[str, float],
 	radius: float,
+	norm_p: float,
+	measurement_count: int,
 	output_dir: str,
 	c_bounds: Dict[str, float],
 	C_bounds: Dict[str, float],
@@ -402,9 +410,9 @@ def plot_demand_distance(
 		ha = heads_a.get(node_id, float("nan"))
 		hb = heads_b.get(node_id, float("nan"))
 		green = "#2f855a"
-		segments_d = ["d = ", f"{da:.2f}", " | ", f"{db:.2f}"]
+		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}"]
 		colors_d = ["#111111", "#2b6cb0", "#111111", green]
-		segments_h = ["h = ", f"{ha:.2f}", " | ", f"{hb:.2f}"]
+		segments_h = ["h = ", f"{ha:.4f}", " | ", f"{hb:.4f}"]
 		colors_h = ["#111111", "#2b6cb0", "#111111", green]
 		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
 
@@ -417,9 +425,9 @@ def plot_demand_distance(
 		da = -sum(demands_a.values())
 		db = -sum(demands_b.values())
 		green = "#2f855a"
-		segments_d = ["d = ", f"{da:.2f}", " | ", f"{db:.2f}"]
+		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}"]
 		colors_d = ["#111111", "#2b6cb0", "#111111", green]
-		segments_h = ["h = ", f"{ha:.2f}", " | ", f"{hb:.2f}"]
+		segments_h = ["h = ", f"{ha:.4f}", " | ", f"{hb:.4f}"]
 		colors_h = ["#111111", "#2b6cb0", "#111111", green]
 		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
 
@@ -431,23 +439,45 @@ def plot_demand_distance(
 		qa = flows_a.get(pipe_name, 0.0)
 		qb = flows_b.get(pipe_name, 0.0)
 		green = "#2f855a"
-		segments_q = ["q = ", f"{qa:.2f}", " | ", f"{qb:.2f}"]
+		segments_q = ["q = ", f"{qa:.4f}", " | ", f"{qb:.4f}"]
 		colors_q = ["#111111", "#2b6cb0", "#111111", green]
 		cl = c_bounds.get(pipe_name, float("-inf"))
 		cu = C_bounds.get(pipe_name, float("inf"))
 		if cl != float("-inf") or cu != float("inf"):
-			segments_b = ["[", f"{cl:.2f}", ", ", f"{cu:.2f}", "]"]
+			segments_b = ["[", f"{cl:.4f}", ", ", f"{cu:.4f}", "]"]
 			colors_b = ["#111111", "#111111", "#111111", "#111111", "#111111"]
 			_colored_two_lines(ax, x, y + 150, segments_q, colors_q, segments_b, colors_b)
 		else:
 			_colored_inline(ax, x, y + 150, segments_q, colors_q)
 
-	ax.set_title(f"Max demand-distance solution (radius={radius:.3f})")
+	if norm_p == float("inf"):
+		norm_label = "inf"
+	else:
+		norm_label = f"{norm_p:g}"
+	ax.set_title(
+		f"Max demand-distance solution ({norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
+	)
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig(os.path.join(output_dir, "demand_distance.png"), dpi=200)
 	plt.show(block=True)
 	plt.close(fig)
+
+
+def _compute_norm(values: Iterable[float], norm_p: float) -> float:
+	import math
+
+	vals = [abs(v) for v in values]
+	if not vals:
+		return 0.0
+	if math.isinf(norm_p):
+		return max(vals)
+	if norm_p <= 0:
+		raise ValueError("NORM must be positive.")
+	acc = 0.0
+	for v in vals:
+		acc += v ** norm_p
+	return acc ** (1.0 / norm_p)
 
 
 def main() -> None:
@@ -482,6 +512,7 @@ def main() -> None:
 		simulator="auto",
 	)
 	scenario_demands = {k: v for k, v in scenario_demands_pos.items()}
+	total_demand = float(sum(scenario_demands.values()))
 
 	measurement_nodes = [str(x) for x in MEASUREMENT_SITES]
 	measurement_tag = "_".join(measurement_nodes)
@@ -498,9 +529,14 @@ def main() -> None:
 			"PIPE_BOUNDS": PIPE_BOUNDS,
 			"PIPE_BOUND_SAFENESS": PIPE_BOUND_SAFENESS,
 			"SOLVER": SOLVER,
+			"GLOBAL_SOLVER": GLOBAL_SOLVER,
 			"DEMAND_INTERVALS": DEMAND_INTERVALS,
 			"SINGLE_NODE_SOLUTION": SINGLE_NODE_SOLUTION,
-			"L2_RADIUS": L2_RADIUS,
+			"RADIUS": RADIUS,
+			"NORM": NORM,
+			"DEMAND_LB": DEMAND_LB,
+			"USE_RESERVOIR_OUTFLOW_CONSTRAINT": USE_RESERVOIR_OUTFLOW_CONSTRAINT,
+			"FIX_TOTAL_DEMAND": FIX_TOTAL_DEMAND,
 			"MULTI_STARTS": MULTI_STARTS,
 			"MULTI_START_NOISE": MULTI_START_NOISE,
 			"timestamp": timestamp,
@@ -553,6 +589,8 @@ def main() -> None:
 				reservoir_outflow += q
 			if pipe.end_node == reservoir_node:
 				reservoir_outflow -= q
+	if not USE_RESERVOIR_OUTFLOW_CONSTRAINT:
+		reservoir_outflow = None
 	preferred_flow_sign = {pid: q for pid, q in scenario_flows.items()}
 
 	reservoir_head = scenario_heads.get(reservoir_node, None) if reservoir_node is not None else None
@@ -688,19 +726,23 @@ def main() -> None:
 			},
 		)
 
-	if L2_RADIUS:
+	if RADIUS:
 		import numpy as np
 
 		solver_mode = SOLVER
-		if SOLVER == "ipopt":
+		if SOLVER in {"ipopt", "global"}:
 			try:
 				import pyomo.environ as pyo
-
-				if not pyo.SolverFactory("ipopt").available(False):
-					print("WARNING: IPOPT executable not found; falling back to SciPy.")
-					solver_mode = "scipy"
+				if SOLVER == "ipopt":
+					if not pyo.SolverFactory("ipopt").available(False):
+						print("WARNING: IPOPT executable not found; falling back to SciPy.")
+						solver_mode = "scipy"
+				else:
+					if not pyo.SolverFactory(GLOBAL_SOLVER).available(False):
+						print(f"WARNING: global solver '{GLOBAL_SOLVER}' not found; falling back to SciPy.")
+						solver_mode = "scipy"
 			except Exception as exc:
-				print(f"WARNING: IPOPT unavailable ({exc}); falling back to SciPy.")
+				print(f"WARNING: solver unavailable ({exc}); falling back to SciPy.")
 				solver_mode = "scipy"
 
 		rng = np.random.default_rng(0)
@@ -718,7 +760,7 @@ def main() -> None:
 					h0[k] = h0[k] + MULTI_START_NOISE * rng.standard_normal()
 
 			run_guess = SolverResult(status="ms", demands=initial_guess.demands, heads=h0, flows=q0)
-			if solver_mode == "ipopt":
+			if solver_mode in {"ipopt", "global"}:
 				distance_res = solve_max_demand_distance_ipopt(
 					network=network,
 					sensor_heads=sensor_heads,
@@ -728,6 +770,10 @@ def main() -> None:
 					reservoir_node=reservoir_node,
 					reservoir_outflow=reservoir_outflow,
 					initial_guess=run_guess,
+					norm_p=NORM,
+					demand_lb=DEMAND_LB,
+					total_demand=total_demand if FIX_TOTAL_DEMAND else None,
+					solver_name=GLOBAL_SOLVER if solver_mode == "global" else "ipopt",
 				)
 			else:
 				distance_res = solve_max_demand_distance(
@@ -739,13 +785,16 @@ def main() -> None:
 					reservoir_node=reservoir_node,
 					reservoir_outflow=reservoir_outflow,
 					initial_guess=run_guess,
+					norm_p=NORM,
+					demand_lb=DEMAND_LB,
+					total_demand=total_demand if FIX_TOTAL_DEMAND else None,
 				)
-			radius = 0.0
+			diffs = []
 			for node_id in network.junctions.keys():
 				da = distance_res.demands_a.get(node_id, 0.0)
 				db = distance_res.demands_b.get(node_id, 0.0)
-				radius += (da - db) ** 2
-			radius = radius ** 0.5
+				diffs.append(da - db)
+			radius = _compute_norm(diffs, NORM)
 
 			runs.append(
 				{
@@ -758,14 +807,14 @@ def main() -> None:
 					"start_heads": h0,
 				}
 			)
-			unique_radii.add(round(radius, 6))
+			unique_radii.add(round(radius, 8))
 
 			if best is None or radius > best[0]:
 				best = (radius, distance_res)
 
 		best_radius, best_res = best
 		print("Demand distance result:")
-		print(f"best radius: {best_radius:.6f}")
+		print(f"best radius: {best_radius:.8f}")
 		print(f"unique local optima (by radius): {len(unique_radii)}")
 
 		plot_demand_distance(
@@ -778,6 +827,8 @@ def main() -> None:
 			flows_a=best_res.flows_a,
 			flows_b=best_res.flows_b,
 			radius=best_radius,
+			norm_p=NORM,
+			measurement_count=len(measurement_nodes),
 			output_dir=output_dir,
 			c_bounds=c_bounds,
 			C_bounds=C_bounds,
@@ -794,6 +845,8 @@ def main() -> None:
 				"flows_a": best_res.flows_a,
 				"flows_b": best_res.flows_b,
 				"radius": best_radius,
+				"norm": NORM,
+				"p": len(measurement_nodes),
 				"max_violation": best_res.max_violation,
 				"min_demand_viol": best_res.min_demand_viol,
 			},
@@ -804,6 +857,7 @@ def main() -> None:
 				"runs": runs,
 				"unique_local_optima": len(unique_radii),
 				"best_radius": best_radius,
+				"norm": NORM,
 			},
 		)
 

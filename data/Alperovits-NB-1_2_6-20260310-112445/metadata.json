@@ -1,0 +1,22 @@
+{
+  "DEMAND_INTERVALS": false,
+  "DEMAND_LB": 1e-06,
+  "FIX_TOTAL_DEMAND": true,
+  "MEASUREMENT_SITES": [
+    "1",
+    "2",
+    "6"
+  ],
+  "MULTI_STARTS": 10,
+  "MULTI_START_NOISE": 0.05,
+  "NORM": 2,
+  "PIPE_BOUNDS": false,
+  "PIPE_BOUND_SAFENESS": 0.9,
+  "RADIUS": true,
+  "SINGLE_NODE_SOLUTION": false,
+  "SOLVER": "ipopt",
+  "USE_RESERVOIR_OUTFLOW_CONSTRAINT": true,
+  "WDN_NAME": "Alperovits",
+  "output_dir": "data/Alperovits-NB-1_2_6-20260310-112445",
+  "timestamp": "20260310-112445"
+}

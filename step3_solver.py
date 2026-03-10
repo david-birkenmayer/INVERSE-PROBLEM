@@ -638,6 +638,9 @@ def solve_max_demand_distance(
     reservoir_node: Optional[str] = None,
     reservoir_outflow: Optional[float] = None,
     initial_guess: Optional[SolverResult] = None,
+    norm_p: float = 2.0,
+    demand_lb: float = 0.0,
+    total_demand: Optional[float] = None,
 ) -> DemandDistanceResult:
     _require_scipy()
     from scipy.optimize import Bounds, NonlinearConstraint, minimize
@@ -718,7 +721,11 @@ def solve_max_demand_distance(
         d_b = demand_from_q(q_b)
         return np.array([d_a[j] for j in junctions] + [d_b[j] for j in junctions], dtype=float)
 
-    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=np.zeros(2 * n_h), ub=np.full(2 * n_h, np.inf))
+    demand_ineq = NonlinearConstraint(
+        demand_ineq_fun,
+        lb=np.full(2 * n_h, demand_lb),
+        ub=np.full(2 * n_h, np.inf),
+    )
 
     reservoir_constraint = None
     if reservoir_node is not None and reservoir_outflow is not None:
@@ -741,6 +748,24 @@ def solve_max_demand_distance(
 
         reservoir_constraint = NonlinearConstraint(reservoir_fun, lb=np.zeros(2), ub=np.zeros(2))
 
+    sign_constraint = None
+    if initial_guess is not None:
+        ref_pipe = None
+        ref_val = 0.0
+        for p in pipes:
+            val = float(initial_guess.flows.get(p, 0.0))
+            if abs(val) > abs(ref_val):
+                ref_pipe = p
+                ref_val = val
+        if ref_pipe is not None and abs(ref_val) > 1e-8:
+            ref_idx = pipes.index(ref_pipe)
+            sign = 1.0 if ref_val >= 0.0 else -1.0
+
+            def sign_fun(x: np.ndarray) -> np.ndarray:
+                return np.array([sign * x[ref_idx]], dtype=float)
+
+            sign_constraint = NonlinearConstraint(sign_fun, lb=np.zeros(1), ub=np.full(1, np.inf))
+
     if initial_guess is None:
         x0 = np.zeros(n_vars, dtype=float)
     else:
@@ -756,15 +781,31 @@ def solve_max_demand_distance(
         q_b = x[n_q + n_h : 2 * n_q + n_h]
         d_a = demand_from_q(q_a)
         d_b = demand_from_q(q_b)
-        diff_sq = 0.0
-        for j in junctions:
-            diff = d_a[j] - d_b[j]
-            diff_sq += diff * diff
-        return -diff_sq
+        diffs = np.array([d_a[j] - d_b[j] for j in junctions], dtype=float)
+        if np.isinf(norm_p):
+            return -float(np.max(np.abs(diffs)))
+        if norm_p <= 0:
+            raise ValueError("norm_p must be positive.")
+        return -float(np.sum(np.abs(diffs) ** norm_p))
 
     constraint_list = [constraints, demand_ineq]
     if reservoir_constraint is not None:
         constraint_list.append(reservoir_constraint)
+    if sign_constraint is not None:
+        constraint_list.append(sign_constraint)
+    if total_demand is not None:
+        def total_demand_fun(x: np.ndarray) -> np.ndarray:
+            q_a = x[:n_q]
+            q_b = x[n_q + n_h : 2 * n_q + n_h]
+            d_a = demand_from_q(q_a)
+            d_b = demand_from_q(q_b)
+            return np.array([
+                sum(d_a.values()) - total_demand,
+                sum(d_b.values()) - total_demand,
+            ], dtype=float)
+
+        total_constraint = NonlinearConstraint(total_demand_fun, lb=np.zeros(2), ub=np.zeros(2))
+        constraint_list.append(total_constraint)
 
     res = minimize(
         objective,
@@ -811,6 +852,10 @@ def solve_max_demand_distance_ipopt(
     reservoir_node: Optional[str] = None,
     reservoir_outflow: Optional[float] = None,
     initial_guess: Optional[SolverResult] = None,
+    norm_p: float = 2.0,
+    demand_lb: float = 0.0,
+    total_demand: Optional[float] = None,
+    solver_name: str = "ipopt",
 ) -> DemandDistanceResult:
     _require_pyomo_ipopt()
     import pyomo.environ as pyo
@@ -877,8 +922,12 @@ def solve_max_demand_distance_ipopt(
     m.demA = pyo.Expression(m.J, rule=lambda mdl, j: demand_A(j))
     m.demB = pyo.Expression(m.J, rule=lambda mdl, j: demand_B(j))
 
-    m.demA_nonneg = pyo.Constraint(m.J, rule=lambda mdl, j: mdl.demA[j] >= 0.0)
-    m.demB_nonneg = pyo.Constraint(m.J, rule=lambda mdl, j: mdl.demB[j] >= 0.0)
+    m.demA_nonneg = pyo.Constraint(m.J, rule=lambda mdl, j: mdl.demA[j] >= demand_lb)
+    m.demB_nonneg = pyo.Constraint(m.J, rule=lambda mdl, j: mdl.demB[j] >= demand_lb)
+
+    if total_demand is not None:
+        m.demA_total = pyo.Constraint(expr=sum(m.demA[j] for j in junctions) == total_demand)
+        m.demB_total = pyo.Constraint(expr=sum(m.demB[j] for j in junctions) == total_demand)
 
     if reservoir_node is not None and reservoir_outflow is not None:
         def res_out_A(mdl):
@@ -894,10 +943,34 @@ def solve_max_demand_distance_ipopt(
         m.resA = pyo.Constraint(rule=res_out_A)
         m.resB = pyo.Constraint(rule=res_out_B)
 
-    m.obj = pyo.Objective(
-        expr=-sum((m.demA[j] - m.demB[j]) ** 2 for j in junctions),
-        sense=pyo.minimize,
-    )
+    if initial_guess is not None:
+        ref_pipe = None
+        ref_val = 0.0
+        for p in pipes:
+            val = float(initial_guess.flows.get(p, 0.0))
+            if abs(val) > abs(ref_val):
+                ref_pipe = p
+                ref_val = val
+        if ref_pipe is not None and abs(ref_val) > 1e-8:
+            sign = 1.0 if ref_val >= 0.0 else -1.0
+            m.signA = pyo.Constraint(expr=sign * m.qA[ref_pipe] >= 0.0)
+
+    if norm_p <= 0:
+        raise ValueError("norm_p must be positive.")
+
+    if norm_p == float("inf"):
+        m.t = pyo.Var(bounds=(0.0, None))
+        def inf_norm_rule(mdl, j):
+            diff = mdl.demA[j] - mdl.demB[j]
+            return mdl.t >= pyo.sqrt(diff * diff)
+
+        m.inf_norm = pyo.Constraint(m.J, rule=inf_norm_rule)
+        m.obj = pyo.Objective(expr=-m.t, sense=pyo.minimize)
+    else:
+        m.obj = pyo.Objective(
+            expr=-sum(pyo.sqrt((m.demA[j] - m.demB[j]) ** 2) ** norm_p for j in junctions),
+            sense=pyo.minimize,
+        )
 
     if initial_guess is not None:
         for p in pipes:
@@ -914,8 +987,12 @@ def solve_max_demand_distance_ipopt(
             m.hA[j].value = initial_guess.heads.get(j, 0.0)
             m.hB[j].value = initial_guess.heads.get(j, 0.0) + 1e-2
 
-    solver = pyo.SolverFactory("ipopt")
-    result = solver.solve(m, tee=False)
+    solver = pyo.SolverFactory(solver_name)
+    result = solver.solve(m, tee=False, load_solutions=False)
+    term = getattr(result.solver, "termination_condition", None)
+    ok_terms = {pyo.TerminationCondition.optimal, pyo.TerminationCondition.locallyOptimal}
+    if term in ok_terms:
+        m.solutions.load_from(result)
 
     q_a = {p: float(pyo.value(m.qA[p])) for p in pipes}
     q_b = {p: float(pyo.value(m.qB[p])) for p in pipes}
@@ -928,6 +1005,8 @@ def solve_max_demand_distance_ipopt(
     d_a = {j: float(pyo.value(m.demA[j])) for j in junctions}
     d_b = {j: float(pyo.value(m.demB[j])) for j in junctions}
 
+    success_flag = term in ok_terms
+
     return DemandDistanceResult(
         demands_a=d_a,
         demands_b=d_b,
@@ -937,7 +1016,7 @@ def solve_max_demand_distance_ipopt(
         flows_b=q_b,
         max_violation=0.0,
         min_demand_viol=min(d_a.values()) if d_a else 0.0,
-        success=str(result.solver.termination_condition) == "optimal",
+        success=bool(success_flag),
     )
 
 
