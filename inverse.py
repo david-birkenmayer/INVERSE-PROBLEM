@@ -4,16 +4,16 @@ import os
 from datetime import datetime
 
 # Easy-to-change configuration
-# WDN_NAME = "Alperovits"; MEASUREMENT_SITES = 3
+WDN_NAME = "Alperovits"; MEASUREMENT_SITES = 2
 # WDN_NAME = "Kadu"; MEASUREMENT_SITES = ["10", "14", "24"]
-WDN_NAME = "Anytown"; MEASUREMENT_SITES = 1 # ([], [50, 100]) # 2 # ([], [20, 140], [20,50,60,100,120,140])
+# WDN_NAME = "Anytown"; MEASUREMENT_SITES = 1 # ([], [50, 100]) # 2 # ([], [20, 140], [20,50,60,100,120,140])
 
 PIPE_BOUNDS = True
 PIPE_BOUND_SAFENESS = 0.85  # in [0, 1], higher means looser bounds
 PIPE_BOUND_METHOD = "perturb"  # "montecarlo" or "perturb"
 PIPE_BOUND_POLICY = "minmax"  # "minmax" or "quantile"
 PIPE_BOUND_PERTURB_SAMPLES = 25
-PIPE_BOUND_PERTURB_SIGMA = 0.10 
+PIPE_BOUND_PERTURB_SIGMA = 0.10
 PIPE_BOUND_PERTURB_SEED = 1
 PIPE_BOUND_PERTURB_FIX_TOTAL = True
 PIPE_BOUND_PERTURB_BASE = "base"  # "auto", "base", or "scenario"

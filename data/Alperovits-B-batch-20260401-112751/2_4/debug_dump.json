@@ -1,0 +1,209 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.2703352293687665,
+      "demand_b": 0.10020192068160268,
+      "demand_lb": 1e-06,
+      "head_a": 207.79726961083773,
+      "head_a_tag": "",
+      "head_b": 207.82616827009207,
+      "head_b_tag": "",
+      "head_lb": 193.4611532898627,
+      "head_ub": 226.5388467101373
+    },
+    "2": {
+      "demand_a": 0.08846131955897629,
+      "demand_b": 0.10838705215497901,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.12109722568920162,
+      "demand_b": 0.056326826396672025,
+      "demand_lb": 1e-06,
+      "head_a": 208.08861463951678,
+      "head_a_tag": "",
+      "head_b": 208.11296832715382,
+      "head_b_tag": "",
+      "head_lb": 195.62629393444394,
+      "head_ub": 224.37370606555606
+    },
+    "4": {
+      "demand_a": 0.1309824291273321,
+      "demand_b": 0.10109523565500589,
+      "demand_lb": 1e-06,
+      "head_a": 207.94218233465352,
+      "head_a_tag": "",
+      "head_b": 207.94218233465352,
+      "head_b_tag": "",
+      "head_lb": 194.2896568934707,
+      "head_ub": 225.7103431065293
+    },
+    "5": {
+      "demand_a": 0.20395202816591235,
+      "demand_b": 0.36415337957974137,
+      "demand_lb": 1e-06,
+      "head_a": 207.91158485528416,
+      "head_a_tag": "",
+      "head_b": 207.8904361382324,
+      "head_b_tag": "",
+      "head_lb": 194.17031922671646,
+      "head_ub": 225.82968077328354
+    },
+    "6": {
+      "demand_a": 0.3051717728581828,
+      "demand_b": 0.3898355903003705,
+      "demand_lb": 1e-06,
+      "head_a": 207.7972730850206,
+      "head_a_tag": "",
+      "head_b": 207.80886936571474,
+      "head_b_tag": "",
+      "head_lb": 193.36886889046428,
+      "head_ub": 226.63113110953572
+    }
+  },
+  "metadata": {
+    "DEMAND_INTERVALS": false,
+    "DEMAND_LB": 1e-06,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": "couenne",
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [
+      "2",
+      "4"
+    ],
+    "MULTI_STARTS": 10,
+    "MULTI_START_NOISE": 0.05,
+    "NORM": 2,
+    "PIPE_BOUNDS": true,
+    "PIPE_BOUND_METHOD": "perturb",
+    "PIPE_BOUND_PERTURB_BASE": "base",
+    "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
+    "PIPE_BOUND_PERTURB_SAMPLES": 25,
+    "PIPE_BOUND_PERTURB_SEED": 1,
+    "PIPE_BOUND_PERTURB_SIGMA": 0.15,
+    "PIPE_BOUND_POLICY": "minmax",
+    "PIPE_BOUND_SAFENESS": 0.85,
+    "RADIUS": true,
+    "SCENARIO_SOURCE": "base",
+    "SINGLE_NODE_SOLUTION": false,
+    "SOLVER": "hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits-B-batch-20260401-112751/2_4",
+    "timestamp": "20260401-112751"
+  },
+  "output_dir": "data/Alperovits-B-batch-20260401-112751/2_4",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.4622006458683017,
+      "flow_a_tag": "",
+      "flow_b": 0.44227491327229784,
+      "flow_b_tag": "",
+      "flow_lb": 0.44223544001579285,
+      "flow_ub": 0.4648970067501068,
+      "headloss_res_a": -1.7773761521520544,
+      "headloss_res_b": -1.6255702747208254
+    },
+    "3": {
+      "flow_a": 0.5693380393410937,
+      "flow_a_tag": "",
+      "flow_b": 0.5693380393410946,
+      "flow_b_tag": "",
+      "flow_lb": 0.5527145266532898,
+      "flow_ub": 0.5940340161323547,
+      "headloss_res_a": -2.7111874220046754,
+      "headloss_res_b": -2.711187422004685
+    },
+    "4": {
+      "flow_a": 0.13220388968387004,
+      "flow_a_tag": "lb",
+      "flow_b": 0.1755733025230721,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.13220331072807312,
+      "flow_ub": 0.17557385563850403,
+      "headloss_res_a": -0.14024016010064524,
+      "headloss_res_b": -0.24956276766561458
+    },
+    "5": {
+      "flow_a": 0.3061517205298916,
+      "flow_a_tag": "",
+      "flow_b": 0.29266950116301665,
+      "flow_b_tag": "",
+      "flow_lb": 0.2579752802848816,
+      "flow_ub": 0.329729825258255,
+      "headloss_res_a": -0.7712447980554663,
+      "headloss_res_b": -0.7039271495325558
+    },
+    "6": {
+      "flow_a": -0.0009799476717087684,
+      "flow_a_tag": "lb",
+      "flow_b": 0.09716608913735385,
+      "flow_b_tag": "ub",
+      "flow_lb": -0.000980442389845848,
+      "flow_ub": 0.097166508436203,
+      "headloss_res_a": 5.912256220746634e-06,
+      "headloss_res_b": -0.0749846985602694
+    },
+    "7": {
+      "flow_a": 0.34110342017910006,
+      "flow_a_tag": "lb",
+      "flow_b": 0.3859480868756258,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.3411029875278473,
+      "flow_ub": 0.38594850897789,
+      "headloss_res_a": -0.9602498021497146,
+      "headloss_res_b": -1.2334393340812801
+    },
+    "8": {
+      "flow_a": 0.26935528169705775,
+      "flow_a_tag": "ub",
+      "flow_b": 0.19736800981895652,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.19736750423908234,
+      "flow_ub": 0.269355833530426,
+      "headloss_res_a": -0.5948477866523528,
+      "headloss_res_b": -0.31648976594141087
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 4,
+      "a_ub": 1,
+      "b_lb": 2,
+      "b_ub": 3
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.08846031955897629,
+    "min_demand_slack_b": 0.056325826396672024,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683716,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": 0.0,
+    "total_demand_target": 1.1200000047683716
+  }
+}

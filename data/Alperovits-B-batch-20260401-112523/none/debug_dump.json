@@ -1,0 +1,206 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.29357228920731665,
+      "demand_b": 0.06700353310287804,
+      "demand_lb": 1e-06,
+      "head_a": 207.785774010989,
+      "head_a_tag": "",
+      "head_b": 207.82758109141105,
+      "head_b_tag": "",
+      "head_lb": 193.28837254949758,
+      "head_ub": 226.71162745050242
+    },
+    "2": {
+      "demand_a": 0.0776811161005122,
+      "demand_b": 0.1098437591051602,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.13184310594102228,
+      "demand_b": 0.04101009594112426,
+      "demand_lb": 1e-06,
+      "head_a": 208.0806812834002,
+      "head_a_tag": "",
+      "head_b": 208.11763887894548,
+      "head_b_tag": "",
+      "head_lb": 195.59310003642656,
+      "head_ub": 224.40689996357344
+    },
+    "4": {
+      "demand_a": 0.13745314379033513,
+      "demand_b": 0.09492198527370233,
+      "demand_lb": 1e-06,
+      "head_a": 207.93554887811564,
+      "head_a_tag": "",
+      "head_b": 207.9385282925669,
+      "head_b_tag": "",
+      "head_lb": 194.16704775335216,
+      "head_ub": 225.83295224664784
+    },
+    "5": {
+      "demand_a": 0.18283210641242909,
+      "demand_b": 0.39835795872574586,
+      "demand_lb": 1e-06,
+      "head_a": 207.90786821962635,
+      "head_a_tag": "",
+      "head_b": 207.88277222270858,
+      "head_b_tag": "",
+      "head_lb": 194.0497882368296,
+      "head_ub": 225.9502117631704
+    },
+    "6": {
+      "demand_a": 0.29661824331675624,
+      "demand_b": 0.4088626726197609,
+      "demand_lb": 1e-06,
+      "head_a": 207.78628255741282,
+      "head_a_tag": "",
+      "head_b": 207.80402703197163,
+      "head_b_tag": "",
+      "head_lb": 193.1595820206114,
+      "head_ub": 226.8404179793886
+    }
+  },
+  "metadata": {
+    "DEMAND_INTERVALS": false,
+    "DEMAND_LB": 1e-06,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": "couenne",
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [],
+    "MULTI_STARTS": 10,
+    "MULTI_START_NOISE": 0.05,
+    "NORM": 2,
+    "PIPE_BOUNDS": true,
+    "PIPE_BOUND_METHOD": "perturb",
+    "PIPE_BOUND_PERTURB_BASE": "base",
+    "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
+    "PIPE_BOUND_PERTURB_SAMPLES": 25,
+    "PIPE_BOUND_PERTURB_SEED": 1,
+    "PIPE_BOUND_PERTURB_SIGMA": 0.2,
+    "PIPE_BOUND_POLICY": "minmax",
+    "PIPE_BOUND_SAFENESS": 0.85,
+    "RADIUS": true,
+    "SCENARIO_SOURCE": "base",
+    "SINGLE_NODE_SOLUTION": false,
+    "SOLVER": "hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits-B-batch-20260401-112523/none",
+    "timestamp": "20260401-112523"
+  },
+  "output_dir": "data/Alperovits-B-batch-20260401-112523/none",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.46853514697801685,
+      "flow_a_tag": "ub",
+      "flow_b": 0.4383656465116173,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.438365638256073,
+      "flow_ub": 0.4685351550579071,
+      "headloss_res_a": -1.8270708465320373,
+      "headloss_res_b": -1.5965905151856175
+    },
+    "3": {
+      "flow_a": 0.5737837416898425,
+      "flow_a_tag": "",
+      "flow_b": 0.571790599151594,
+      "flow_b_tag": "",
+      "flow_lb": 0.5486409664154053,
+      "flow_ub": 0.6044999361038208,
+      "headloss_res_a": -2.7542278333483505,
+      "headloss_res_b": -2.734889172865334
+    },
+    "4": {
+      "flow_a": 0.12524232652525544,
+      "flow_a_tag": "lb",
+      "flow_b": 0.1827933901000376,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.12524232268333435,
+      "flow_ub": 0.18279339373111725,
+      "headloss_res_a": -0.12563882549714706,
+      "headloss_res_b": -0.2708438475388482
+    },
+    "5": {
+      "flow_a": 0.31108827137425193,
+      "flow_a_tag": "",
+      "flow_b": 0.2940752237778541,
+      "flow_b_tag": "",
+      "flow_lb": 0.24518345296382904,
+      "flow_ub": 0.3417060375213623,
+      "headloss_res_a": -0.7966710236291397,
+      "headloss_res_b": -0.7108008788061889
+    },
+    "6": {
+      "flow_a": -0.01447002805749571,
+      "flow_a_tag": "lb",
+      "flow_b": 0.11478744884190678,
+      "flow_b_tag": "ub",
+      "flow_lb": -0.014470032416284084,
+      "flow_ub": 0.11478745192289352,
+      "headloss_res_a": 0.0015380576876067266,
+      "headloss_res_b": -0.10523646253309962
+    },
+    "7": {
+      "flow_a": 0.33669204103699457,
+      "flow_a_tag": "lb",
+      "flow_b": 0.39735555057049304,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.33669203519821167,
+      "flow_ub": 0.3973555564880371,
+      "headloss_res_a": -0.9352406062174425,
+      "headloss_res_b": -1.3084450973930517
+    },
+    "8": {
+      "flow_a": 0.27910226114982095,
+      "flow_a_tag": "ub",
+      "flow_b": 0.18179098194478482,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.18179097771644592,
+      "flow_ub": 0.27910226583480835,
+      "headloss_res_a": -0.6393214531325627,
+      "headloss_res_b": -0.2678365698992806
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 4,
+      "a_ub": 2,
+      "b_lb": 3,
+      "b_ub": 3
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.0776801161005122,
+    "min_demand_slack_b": 0.04100909594112426,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683716,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": 0.0,
+    "total_demand_target": 1.1200000047683716
+  }
+}

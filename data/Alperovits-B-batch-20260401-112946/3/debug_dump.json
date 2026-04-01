@@ -1,0 +1,208 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.1332163828371309,
+      "demand_b": 0.24684263913917875,
+      "demand_lb": 1e-06,
+      "head_a": 207.82375910308244,
+      "head_a_tag": "",
+      "head_b": 207.82019140067467,
+      "head_b_tag": "",
+      "head_lb": 193.62708714484413,
+      "head_ub": 226.37291285515587
+    },
+    "2": {
+      "demand_a": 0.10592702893031314,
+      "demand_b": 0.11648667583747074,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.07140969470309017,
+      "demand_b": 0.10089182873652325,
+      "demand_lb": 1e-06,
+      "head_a": 208.10795317316055,
+      "head_a_tag": "",
+      "head_b": 208.10795317316055,
+      "head_b_tag": "",
+      "head_lb": 195.6583771104362,
+      "head_ub": 224.3416228895638
+    },
+    "4": {
+      "demand_a": 0.10763587131060381,
+      "demand_b": 0.11693685805649495,
+      "demand_lb": 1e-06,
+      "head_a": 207.94471504714087,
+      "head_a_tag": "",
+      "head_b": 207.96025460401935,
+      "head_b_tag": "",
+      "head_lb": 194.40450298777,
+      "head_ub": 225.59549701223
+    },
+    "5": {
+      "demand_a": 0.3314942869963385,
+      "demand_b": 0.22550076301535737,
+      "demand_lb": 1e-06,
+      "head_a": 207.89693855619308,
+      "head_a_tag": "",
+      "head_b": 207.92662737997787,
+      "head_b_tag": "",
+      "head_lb": 194.28361303052068,
+      "head_ub": 225.71638696947932
+    },
+    "6": {
+      "demand_a": 0.37031673999089515,
+      "demand_b": 0.3133412399833465,
+      "demand_lb": 1e-06,
+      "head_a": 207.81210962192026,
+      "head_a_tag": "",
+      "head_b": 207.81981366771308,
+      "head_b_tag": "",
+      "head_lb": 193.56687411412554,
+      "head_ub": 226.43312588587446
+    }
+  },
+  "metadata": {
+    "DEMAND_INTERVALS": false,
+    "DEMAND_LB": 1e-06,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": "couenne",
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [
+      "3"
+    ],
+    "MULTI_STARTS": 10,
+    "MULTI_START_NOISE": 0.05,
+    "NORM": 2,
+    "PIPE_BOUNDS": true,
+    "PIPE_BOUND_METHOD": "perturb",
+    "PIPE_BOUND_PERTURB_BASE": "base",
+    "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
+    "PIPE_BOUND_PERTURB_SAMPLES": 25,
+    "PIPE_BOUND_PERTURB_SEED": 1,
+    "PIPE_BOUND_PERTURB_SIGMA": 0.1,
+    "PIPE_BOUND_POLICY": "minmax",
+    "PIPE_BOUND_SAFENESS": 0.85,
+    "RADIUS": true,
+    "SCENARIO_SOURCE": "base",
+    "SINGLE_NODE_SOLUTION": false,
+    "SOLVER": "hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits-B-batch-20260401-112946/3",
+    "timestamp": "20260401-112946"
+  },
+  "output_dir": "data/Alperovits-B-batch-20260401-112946/3",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.4464401416762795,
+      "flow_a_tag": "",
+      "flow_b": 0.44644014167629287,
+      "flow_b_tag": "",
+      "flow_lb": 0.44622185826301575,
+      "flow_ub": 0.4613533318042755,
+      "headloss_res_a": -1.6567374444020266,
+      "headloss_res_b": -1.6567374444021437
+    },
+    "3": {
+      "flow_a": 0.567632834161779,
+      "flow_a_tag": "",
+      "flow_b": 0.557073187254608,
+      "flow_b_tag": "",
+      "flow_lb": 0.5568748712539673,
+      "flow_ub": 0.5840606689453125,
+      "headloss_res_a": -2.694769616819128,
+      "headloss_res_b": -2.594222193854795
+    },
+    "4": {
+      "flow_a": 0.16816720896801554,
+      "flow_a_tag": "ub",
+      "flow_b": 0.13911865166534904,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.13911864161491394,
+      "flow_ub": 0.16816721856594086,
+      "headloss_res_a": -0.22864877017691326,
+      "headloss_res_b": -0.15554867887777662
+    },
+    "5": {
+      "flow_a": 0.2918297538831597,
+      "flow_a_tag": "",
+      "flow_b": 0.301017677532764,
+      "flow_b_tag": "",
+      "flow_lb": 0.27015259861946106,
+      "flow_ub": 0.3175203204154968,
+      "headloss_res_a": -0.6998370531758802,
+      "headloss_res_b": -0.7452436714148617
+    },
+    "6": {
+      "flow_a": 0.07848698610773545,
+      "flow_a_tag": "ub",
+      "flow_b": 0.012323562450582519,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.012323553673923016,
+      "flow_ub": 0.07848699390888214,
+      "headloss_res_a": -0.048563537586768867,
+      "headloss_res_b": -0.0011067240873311843
+    },
+    "7": {
+      "flow_a": 0.3750304469731893,
+      "flow_a_tag": "ub",
+      "flow_b": 0.3455483129397696,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.3455483019351959,
+      "flow_ub": 0.3750304579734802,
+      "headloss_res_a": -1.1637493822996159,
+      "headloss_res_b": -0.9857865167604727
+    },
+    "8": {
+      "flow_a": 0.21170336894486635,
+      "flow_a_tag": "lb",
+      "flow_b": 0.2591662015897613,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.211703360080719,
+      "flow_ub": 0.2591662108898163,
+      "headloss_res_a": -0.36489773036498235,
+      "headloss_res_b": -0.550089859255135
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 2,
+      "a_ub": 3,
+      "b_lb": 4,
+      "b_ub": 1
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.07140869470309016,
+    "min_demand_slack_b": 0.10089082873652325,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683716,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": 0.0,
+    "total_demand_target": 1.1200000047683716
+  }
+}

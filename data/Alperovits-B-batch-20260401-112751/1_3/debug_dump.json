@@ -1,0 +1,209 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.26450008052045915,
+      "demand_b": 0.10020102301268335,
+      "demand_lb": 1e-06,
+      "head_a": 207.7984494511746,
+      "head_a_tag": "",
+      "head_b": 207.79844945117458,
+      "head_b_tag": "",
+      "head_lb": 193.4611532898627,
+      "head_ub": 226.5388467101373
+    },
+    "2": {
+      "demand_a": 0.08350597575096463,
+      "demand_b": 0.06737854258342368,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.12379395309939212,
+      "demand_b": 0.07894843779962063,
+      "demand_lb": 1e-06,
+      "head_a": 208.085249664259,
+      "head_a_tag": "",
+      "head_b": 208.085249664259,
+      "head_b_tag": "",
+      "head_lb": 195.62629393444394,
+      "head_ub": 224.37370606555606
+    },
+    "4": {
+      "demand_a": 0.13846444969167387,
+      "demand_b": 0.11948099746151686,
+      "demand_lb": 1e-06,
+      "head_a": 207.93881752685857,
+      "head_a_tag": "",
+      "head_b": 207.91446352277129,
+      "head_b_tag": "",
+      "head_lb": 194.2896568934707,
+      "head_ub": 225.7103431065293
+    },
+    "5": {
+      "demand_a": 0.20978666523702633,
+      "demand_b": 0.36415482912042874,
+      "demand_lb": 1e-06,
+      "head_a": 207.90822029283066,
+      "head_a_tag": "",
+      "head_b": 207.86271702778237,
+      "head_b_tag": "",
+      "head_lb": 194.17031922671646,
+      "head_ub": 225.82968077328354
+    },
+    "6": {
+      "demand_a": 0.29994888046885554,
+      "demand_b": 0.3898361747906983,
+      "demand_lb": 1e-06,
+      "head_a": 207.79845292853273,
+      "head_a_tag": "",
+      "head_b": 207.7811504102127,
+      "head_b_tag": "",
+      "head_lb": 193.36886889046428,
+      "head_ub": 226.63113110953572
+    }
+  },
+  "metadata": {
+    "DEMAND_INTERVALS": false,
+    "DEMAND_LB": 1e-06,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": "couenne",
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [
+      "1",
+      "3"
+    ],
+    "MULTI_STARTS": 10,
+    "MULTI_START_NOISE": 0.05,
+    "NORM": 2,
+    "PIPE_BOUNDS": true,
+    "PIPE_BOUND_METHOD": "perturb",
+    "PIPE_BOUND_PERTURB_BASE": "base",
+    "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
+    "PIPE_BOUND_PERTURB_SAMPLES": 25,
+    "PIPE_BOUND_PERTURB_SEED": 1,
+    "PIPE_BOUND_PERTURB_SIGMA": 0.15,
+    "PIPE_BOUND_POLICY": "minmax",
+    "PIPE_BOUND_SAFENESS": 0.85,
+    "RADIUS": true,
+    "SCENARIO_SOURCE": "base",
+    "SINGLE_NODE_SOLUTION": false,
+    "SOLVER": "hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits-B-batch-20260401-112751/1_3",
+    "timestamp": "20260401-112751"
+  },
+  "output_dir": "data/Alperovits-B-batch-20260401-112751/1_3",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.4648969437982346,
+      "flow_a_tag": "ub",
+      "flow_b": 0.4648969437982432,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.44223544001579285,
+      "flow_ub": 0.4648970067501068,
+      "headloss_res_a": -1.7984448312560715,
+      "headloss_res_b": -1.79844483125615
+    },
+    "3": {
+      "flow_a": 0.5715970852191724,
+      "flow_a_tag": "",
+      "flow_b": 0.5877245183867047,
+      "flow_b_tag": "",
+      "flow_lb": 0.5527145266532898,
+      "flow_ub": 0.5940340161323547,
+      "headloss_res_a": -2.7330156844291635,
+      "headloss_res_b": -2.891414579619053
+    },
+    "4": {
+      "flow_a": 0.1322033172973121,
+      "flow_a_tag": "lb",
+      "flow_b": 0.17557384951557833,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.13220331072807312,
+      "flow_ub": 0.17557385563850403,
+      "headloss_res_a": -0.14023892613680825,
+      "headloss_res_b": -0.24956434653591253
+    },
+    "5": {
+      "flow_a": 0.3009293182301864,
+      "flow_a_tag": "",
+      "flow_b": 0.2926696714096095,
+      "flow_b_tag": "",
+      "flow_lb": 0.2579752802848816,
+      "flow_ub": 0.329729825258255,
+      "headloss_res_a": -0.7448001263832889,
+      "headloss_res_b": -0.7039279799624348
+    },
+    "6": {
+      "flow_a": -0.0009804377613309087,
+      "flow_a_tag": "lb",
+      "flow_b": 0.09716650338108884,
+      "flow_b_tag": "ub",
+      "flow_lb": -0.000980442389845848,
+      "flow_ub": 0.097166508436203,
+      "headloss_res_a": 5.918471980726417e-06,
+      "headloss_res_b": -0.07498534883429679
+    },
+    "7": {
+      "flow_a": 0.3411029906988425,
+      "flow_a_tag": "lb",
+      "flow_b": 0.38594850599862257,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.3411029875278473,
+      "flow_ub": 0.38594850897789,
+      "headloss_res_a": -0.9602473510787288,
+      "headloss_res_b": -1.2334420487724977
+    },
+    "8": {
+      "flow_a": 0.26351964275912826,
+      "flow_a_tag": "",
+      "flow_b": 0.1973675263937722,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.19736750423908234,
+      "flow_ub": 0.269355833530426,
+      "headloss_res_a": -0.568996724333081,
+      "headloss_res_b": -0.31648819225166686
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 4,
+      "a_ub": 1,
+      "b_lb": 2,
+      "b_ub": 4
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.08350497575096463,
+    "min_demand_slack_b": 0.06737754258342368,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683714,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": -2.220446049250313e-16,
+    "total_demand_target": 1.1200000047683716
+  }
+}

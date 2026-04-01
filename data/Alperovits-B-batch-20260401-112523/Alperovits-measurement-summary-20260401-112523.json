@@ -1,0 +1,93 @@
+{
+  "results": [
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "5"
+      ],
+      "min_demand_viol": 0.06452954236023392,
+      "objective": 0.11129665874782943,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/5",
+      "radius": 0.33361153869107923,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1"
+      ],
+      "min_demand_viol": 0.04508950142122145,
+      "objective": 0.11471551688910431,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/1",
+      "radius": 0.3386967919675418,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "3"
+      ],
+      "min_demand_viol": 0.04104096462136256,
+      "objective": 0.11490209110545062,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/3",
+      "radius": 0.33897210962769575,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "6"
+      ],
+      "min_demand_viol": 0.041009186620486554,
+      "objective": 0.11721499031241367,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/6",
+      "radius": 0.34236674825749897,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "4"
+      ],
+      "min_demand_viol": 0.04100938592364625,
+      "objective": 0.12062536804381356,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/4",
+      "radius": 0.34731162958330886,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [],
+      "min_demand_viol": 0.04100909594112426,
+      "objective": 0.12147757692310439,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/none",
+      "radius": 0.34853633515475024,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2"
+      ],
+      "min_demand_viol": 0.04100909595948374,
+      "objective": 0.12147757822178298,
+      "output_dir": "data/Alperovits-B-batch-20260401-112523/2",
+      "radius": 0.34853633701779646,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}

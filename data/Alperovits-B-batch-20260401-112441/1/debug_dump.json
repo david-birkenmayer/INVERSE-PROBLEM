@@ -1,0 +1,208 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.22811900329907803,
+      "demand_b": 0.15946829883383892,
+      "demand_lb": 1e-06,
+      "head_a": 207.8192828213146,
+      "head_a_tag": "",
+      "head_b": 207.8192828213146,
+      "head_b_tag": "",
+      "head_lb": 193.75525106874858,
+      "head_ub": 226.24474893125142
+    },
+    "2": {
+      "demand_a": 0.11009825900678938,
+      "demand_b": 0.10019157550451041,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.10043403780439347,
+      "demand_b": 0.08501730829425608,
+      "demand_lb": 1e-06,
+      "head_a": 208.10416758306647,
+      "head_a_tag": "",
+      "head_b": 208.101631532575,
+      "head_b_tag": "",
+      "head_lb": 195.68327867730858,
+      "head_ub": 224.31672132269142
+    },
+    "4": {
+      "demand_a": 0.11830821063499852,
+      "demand_b": 0.11456599753705698,
+      "demand_lb": 1e-06,
+      "head_a": 207.95547451232585,
+      "head_a_tag": "",
+      "head_b": 207.9439256173502,
+      "head_b_tag": "",
+      "head_lb": 194.4912311103774,
+      "head_ub": 225.5087688896226
+    },
+    "5": {
+      "demand_a": 0.2430688946793732,
+      "demand_b": 0.30657875037807614,
+      "demand_lb": 1e-06,
+      "head_a": 207.91934732675188,
+      "head_a_tag": "",
+      "head_b": 207.89929069541384,
+      "head_b_tag": "",
+      "head_lb": 194.3694387645554,
+      "head_ub": 225.6305612354446
+    },
+    "6": {
+      "demand_a": 0.319971599343739,
+      "demand_b": 0.35417807422063313,
+      "demand_lb": 1e-06,
+      "head_a": 207.81812613109688,
+      "head_a_tag": "",
+      "head_b": 207.81160116944187,
+      "head_b_tag": "",
+      "head_lb": 193.71684621726888,
+      "head_ub": 226.28315378273112
+    }
+  },
+  "metadata": {
+    "DEMAND_INTERVALS": false,
+    "DEMAND_LB": 1e-06,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": "couenne",
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [
+      "1"
+    ],
+    "MULTI_STARTS": 10,
+    "MULTI_START_NOISE": 0.05,
+    "NORM": 2,
+    "PIPE_BOUNDS": true,
+    "PIPE_BOUND_METHOD": "perturb",
+    "PIPE_BOUND_PERTURB_BASE": "base",
+    "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
+    "PIPE_BOUND_PERTURB_SAMPLES": 25,
+    "PIPE_BOUND_PERTURB_SEED": 1,
+    "PIPE_BOUND_PERTURB_SIGMA": 0.06,
+    "PIPE_BOUND_POLICY": "minmax",
+    "PIPE_BOUND_SAFENESS": 0.85,
+    "RADIUS": true,
+    "SCENARIO_SOURCE": "base",
+    "SINGLE_NODE_SOLUTION": false,
+    "SOLVER": "hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits-B-batch-20260401-112441/1",
+    "timestamp": "20260401-112441"
+  },
+  "output_dir": "data/Alperovits-B-batch-20260401-112441/1",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.4495623020995497,
+      "flow_a_tag": "",
+      "flow_b": 0.45164364241034316,
+      "flow_b_tag": "",
+      "flow_lb": 0.4494941532611847,
+      "flow_ub": 0.4585840106010437,
+      "headloss_res_a": -1.6802956943143468,
+      "headloss_res_b": -1.6960938554141878
+    },
+    "3": {
+      "flow_a": 0.5603394436620325,
+      "flow_a_tag": "",
+      "flow_b": 0.568164786853518,
+      "flow_b_tag": "",
+      "flow_lb": 0.5602670907974243,
+      "flow_ub": 0.5764147639274597,
+      "headloss_res_a": -2.6251166885572843,
+      "headloss_res_b": -2.699885855474589
+    },
+    "4": {
+      "flow_a": 0.14461098868634417,
+      "flow_a_tag": "lb",
+      "flow_b": 0.16210308459525194,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.14461097121238708,
+      "flow_ub": 0.1621031016111374,
+      "headloss_res_a": -0.16828071913049358,
+      "headloss_res_b": -0.21221394469107352
+    },
+    "5": {
+      "flow_a": 0.29742024434068975,
+      "flow_a_tag": "",
+      "flow_b": 0.2914957047212091,
+      "flow_b_tag": "",
+      "flow_lb": 0.2794540822505951,
+      "flow_ub": 0.3076257109642029,
+      "headloss_res_a": -0.727293261176665,
+      "headloss_res_b": -0.698213375083035
+    },
+    "6": {
+      "flow_a": 0.02255135500304922,
+      "flow_a_tag": "lb",
+      "flow_b": 0.06268236949942402,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.022551340982317924,
+      "flow_ub": 0.0626823827624321,
+      "headloss_res_a": -0.0038142710488647006,
+      "headloss_res_b": -0.03072318335474323
+    },
+    "7": {
+      "flow_a": 0.34912826429515625,
+      "flow_a_tag": "lb",
+      "flow_b": 0.3666263341160871,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.34912824630737305,
+      "flow_ub": 0.3666263520717621,
+      "headloss_res_a": -1.0066003698336814,
+      "headloss_res_b": -1.1114989469003214
+    },
+    "8": {
+      "flow_a": 0.25067035830212725,
+      "flow_a_tag": "ub",
+      "flow_b": 0.22215066833326294,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.22215065360069275,
+      "flow_ub": 0.2506703734397888,
+      "headloss_res_a": -0.5141231161895685,
+      "headloss_res_b": -0.4023732931617387
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 4,
+      "a_ub": 1,
+      "b_lb": 2,
+      "b_ub": 3
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.10043303780439347,
+    "min_demand_slack_b": 0.08501630829425608,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683716,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": 0.0,
+    "total_demand_target": 1.1200000047683716
+  }
+}
