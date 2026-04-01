@@ -97,6 +97,107 @@ def simulate_random_demand_scenarios(
     return flows_by_pipe
 
 
+def simulate_perturbed_demand_scenarios(
+    inp_path: str,
+    n_scenarios: int,
+    demand_sigma: float = 0.1,
+    base_demands: Optional[Dict[str, float]] = None,
+    enforce_total_demand: bool = False,
+    total_demand: Optional[float] = None,
+    include_base: bool = True,
+    seed: Optional[int] = 1,
+    simulator: str = "auto",
+) -> Dict[str, np.ndarray]:
+    """
+    Simulate demand scenarios by perturbing a fixed base demand vector.
+
+    Each perturbed demand is: d = max(0, d* (1 + sigma * N(0,1))).
+    Optionally rescales each draw to keep total demand fixed.
+
+    Returns: {pipe_id: np.ndarray(shape=(n_scenarios + include_base,))}
+    """
+    _require_wntr()
+    import wntr
+
+    rng = np.random.default_rng(seed)
+    wn = wntr.network.WaterNetworkModel(inp_path)
+
+    base_vals: Dict[str, float] = {}
+    for name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            base_vals[name] = 0.0
+        else:
+            base_vals[name] = float(node.demand_timeseries_list[0].base_value or 0.0)
+
+    if base_demands is not None:
+        for name in base_vals:
+            if name in base_demands:
+                base_vals[name] = float(base_demands[name])
+
+    target_total = total_demand
+    if target_total is None:
+        target_total = float(sum(base_vals.values()))
+
+    total_samples = n_scenarios + (1 if include_base else 0)
+    flows_by_pipe: Dict[str, np.ndarray] = {
+        pipe_name: np.zeros(total_samples, dtype=float) for pipe_name, _ in wn.pipes()
+    }
+
+    if simulator == "auto":
+        try:
+            sim = wntr.sim.EpanetSimulator(wn)
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+    elif simulator == "epanet":
+        sim = wntr.sim.EpanetSimulator(wn)
+    elif simulator == "wntr":
+        sim = wntr.sim.WNTRSimulator(wn)
+    else:
+        raise ValueError("simulator must be 'auto', 'epanet', or 'wntr'.")
+
+    for i in range(total_samples):
+        if include_base and i == 0:
+            demands = dict(base_vals)
+        else:
+            demands = {}
+            for junc_name, base in base_vals.items():
+                if base <= 0:
+                    demands[junc_name] = 0.0
+                else:
+                    pert = base * (1.0 + demand_sigma * float(rng.standard_normal()))
+                    demands[junc_name] = max(0.0, pert)
+
+            if enforce_total_demand and target_total is not None and target_total > 0:
+                current_total = sum(demands.values())
+                if current_total > 0:
+                    scale = target_total / current_total
+                    for name in demands:
+                        demands[name] *= scale
+
+        for junc_name, node in wn.junctions():
+            if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+                continue
+            node.demand_timeseries_list[0].base_value = demands.get(junc_name, 0.0)
+
+        try:
+            results = sim.run_sim()
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+            results = sim.run_sim()
+
+        flow_df = results.link["flowrate"]
+        t0 = flow_df.index[0]
+        for pipe_name in flows_by_pipe:
+            flows_by_pipe[pipe_name][i] = float(flow_df.loc[t0, pipe_name])
+
+    for junc_name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            continue
+        node.demand_timeseries_list[0].base_value = base_vals[junc_name]
+
+    return flows_by_pipe
+
+
 def simulate_base_flows(
     inp_path: str,
     simulator: str = "auto",
@@ -130,6 +231,54 @@ def simulate_base_flows(
     flow_df = results.link["flowrate"]
     t0 = flow_df.index[0]
     return {pipe_name: float(flow_df.loc[t0, pipe_name]) for pipe_name in flow_df.columns}
+
+
+def simulate_base_scenario(
+    inp_path: str,
+    simulator: str = "auto",
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+    """
+    Simulate one steady-state scenario using base demands from the .inp.
+
+    Returns: (demands, heads, flows)
+    """
+    _require_wntr()
+    import wntr
+
+    wn = wntr.network.WaterNetworkModel(inp_path)
+
+    demands: Dict[str, float] = {}
+    for name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            demands[name] = 0.0
+            continue
+        demands[name] = float(node.demand_timeseries_list[0].base_value or 0.0)
+
+    if simulator == "auto":
+        try:
+            sim = wntr.sim.EpanetSimulator(wn)
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+    elif simulator == "epanet":
+        sim = wntr.sim.EpanetSimulator(wn)
+    elif simulator == "wntr":
+        sim = wntr.sim.WNTRSimulator(wn)
+    else:
+        raise ValueError("simulator must be 'auto', 'epanet', or 'wntr'.")
+
+    try:
+        results = sim.run_sim()
+    except Exception:
+        sim = wntr.sim.WNTRSimulator(wn)
+        results = sim.run_sim()
+
+    flow_df = results.link["flowrate"]
+    head_df = results.node["head"]
+    t0 = flow_df.index[0]
+
+    flows = {pipe_name: float(flow_df.loc[t0, pipe_name]) for pipe_name in flow_df.columns}
+    heads = {node_name: float(head_df.loc[t0, node_name]) for node_name in head_df.columns}
+    return demands, heads, flows
 
 
 def simulate_single_random_scenario(

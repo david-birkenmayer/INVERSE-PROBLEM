@@ -11,6 +11,7 @@ class NodeData:
     elevation_m: float
     base_demand: float
     node_type: str  # junction | reservoir | tank
+    coordinates: Tuple[float, float] | None
 
 
 @dataclass(frozen=True)
@@ -62,19 +63,24 @@ def load_inp_network(file_path: str) -> NetworkData:
     tanks: Dict[str, NodeData] = {}
 
     for name, node in wn.nodes():
+        coords = None
+        try:
+            coords = (float(node.coordinates[0]), float(node.coordinates[1]))
+        except Exception:
+            coords = None
         if node.node_type == "Junction":
             demand = float(node.base_demand) if node.base_demand is not None else 0.0
-            n = NodeData(name, float(node.elevation), demand, "junction")
+            n = NodeData(name, float(node.elevation), demand, "junction", coords)
             junctions[name] = n
             nodes[name] = n
         elif node.node_type == "Reservoir":
             head_value = node.head if node.head is not None else getattr(node, "elevation", None)
             head_value = 0.0 if head_value is None else float(head_value)
-            n = NodeData(name, head_value, 0.0, "reservoir")
+            n = NodeData(name, head_value, 0.0, "reservoir", coords)
             reservoirs[name] = n
             nodes[name] = n
         elif node.node_type == "Tank":
-            n = NodeData(name, float(node.elevation), 0.0, "tank")
+            n = NodeData(name, float(node.elevation), 0.0, "tank", coords)
             tanks[name] = n
             nodes[name] = n
 
@@ -134,6 +140,23 @@ def darcy_weisbach_resistance(
     return r_e, f, Re
 
 
+def hazen_williams_resistance(
+    length_m: float,
+    diameter_m: float,
+    roughness_c: float,
+) -> float:
+    """
+    Compute r_e for Hazen-Williams: h = r_e * q * |q|^(n-1).
+
+    Uses n = 1.852 and h = 10.67 * L * Q^1.852 / (C^1.852 * D^4.871).
+    """
+    if diameter_m <= 0 or length_m <= 0:
+        raise ValueError("Pipe length and diameter must be positive.")
+    if roughness_c <= 0:
+        raise ValueError("Hazen-Williams roughness C must be positive.")
+    return 10.67 * length_m / (roughness_c ** 1.852 * diameter_m ** 4.871)
+
+
 def compute_pipe_resistances(
     network: NetworkData,
     q_nominal_by_pipe: Optional[Dict[str, float]] = None,
@@ -162,6 +185,23 @@ def compute_pipe_resistances(
             "f": f,
             "Re": Re,
         }
+    return results
+
+
+def compute_pipe_resistances_hw(
+    network: NetworkData,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute Hazen-Williams resistance r_e for each pipe.
+    """
+    results: Dict[str, Dict[str, float]] = {}
+    for pipe_id, pipe in network.pipes.items():
+        r_e = hazen_williams_resistance(
+            length_m=pipe.length_m,
+            diameter_m=pipe.diameter_m,
+            roughness_c=pipe.roughness,
+        )
+        results[pipe_id] = {"r_e": r_e}
     return results
 
 

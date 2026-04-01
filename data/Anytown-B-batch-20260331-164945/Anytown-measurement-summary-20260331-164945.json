@@ -1,0 +1,38 @@
+{
+  "results": [
+    {
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "20",
+        "50",
+        "60",
+        "100",
+        "120",
+        "140"
+      ],
+      "min_demand_viol": -1.4098273791351885e-07,
+      "output_dir": "data/Anytown-B-batch-20260331-164945/20_50_60_100_120_140",
+      "radius": 0.00044025629546615635,
+      "success": true
+    },
+    {
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "20",
+        "140"
+      ],
+      "min_demand_viol": 0.00042318511167918724,
+      "output_dir": "data/Anytown-B-batch-20260331-164945/20_140",
+      "radius": 0.0032036068875198323,
+      "success": true
+    },
+    {
+      "max_violation": 0.0,
+      "measurement_sites": [],
+      "min_demand_viol": 0.0004988077475967741,
+      "output_dir": "data/Anytown-B-batch-20260331-164945/none",
+      "radius": 0.005240484818382295,
+      "success": true
+    }
+  ]
+}

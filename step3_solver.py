@@ -56,6 +56,27 @@ class DemandDistanceResult:
     max_violation: float
     min_demand_viol: float
     success: bool
+    objective: Optional[float] = None
+    solver_status: Optional[str] = None
+    best_bound: Optional[float] = None
+
+
+def _compute_objective_value(
+    demands_a: Dict[str, float],
+    demands_b: Dict[str, float],
+    norm_p: float,
+) -> float:
+    if not demands_a and not demands_b:
+        return 0.0
+    keys = sorted(set(demands_a.keys()) | set(demands_b.keys()))
+    diffs = [abs(demands_a.get(k, 0.0) - demands_b.get(k, 0.0)) for k in keys]
+    if not diffs:
+        return 0.0
+    if math.isinf(norm_p):
+        return max(diffs)
+    if norm_p <= 0:
+        raise ValueError("norm_p must be positive.")
+    return float(sum(d ** norm_p for d in diffs))
 
 
 def _require_pyomo_ipopt() -> None:
@@ -489,12 +510,17 @@ def solve_feasibility(
     c_bounds: Optional[Dict[str, float]] = None,
     C_bounds: Optional[Dict[str, float]] = None,
     initial_guess: Optional[SolverResult] = None,
+    measurement_nodes: Optional[Iterable[str]] = None,
+    measurement_heads_equal_only: bool = False,
 ) -> FeasibilityResult:
     _require_scipy()
     from scipy.optimize import Bounds, NonlinearConstraint, minimize
 
     reservoir_nodes = set(network.reservoirs.keys())
     fixed_heads = dict(sensor_heads)
+    measurement_set = set(measurement_nodes or [])
+    if measurement_heads_equal_only:
+        fixed_heads = {k: v for k, v in fixed_heads.items() if k not in measurement_set}
     for res_id, res_node in network.reservoirs.items():
         if res_id not in fixed_heads:
             fixed_heads[res_id] = res_node.elevation_m
@@ -633,6 +659,8 @@ def solve_max_demand_distance(
     network: NetworkData,
     sensor_heads: Dict[str, float],
     pipe_resistances: Dict[str, float],
+    measurement_nodes: Optional[Iterable[str]] = None,
+    measurement_heads_equal_only: bool = False,
     c_bounds: Optional[Dict[str, float]] = None,
     C_bounds: Optional[Dict[str, float]] = None,
     reservoir_node: Optional[str] = None,
@@ -647,6 +675,9 @@ def solve_max_demand_distance(
 
     reservoir_nodes = set(network.reservoirs.keys())
     fixed_heads = dict(sensor_heads)
+    measurement_set = set(measurement_nodes or [])
+    if measurement_heads_equal_only:
+        fixed_heads = {k: v for k, v in fixed_heads.items() if k not in measurement_set}
     for res_id, res_node in network.reservoirs.items():
         if res_id not in fixed_heads:
             fixed_heads[res_id] = res_node.elevation_m
@@ -709,9 +740,16 @@ def solve_max_demand_distance(
                 residuals.append(h_a[node_id] - head_val)
                 residuals.append(h_b[node_id] - head_val)
 
+        if measurement_heads_equal_only:
+            for node_id in measurement_set:
+                if node_id in junctions and node_id not in fixed_heads:
+                    residuals.append(h_a[node_id] - h_b[node_id])
+
         return np.array(residuals, dtype=float)
 
     n_constraints = 2 * n_q + 2 * sum(1 for n in fixed_heads if n in junctions)
+    if measurement_heads_equal_only:
+        n_constraints += sum(1 for n in measurement_set if n in junctions and n not in fixed_heads)
     constraints = NonlinearConstraint(constraints_fun, lb=np.zeros(n_constraints), ub=np.zeros(n_constraints))
 
     def demand_ineq_fun(x: np.ndarray) -> np.ndarray:
@@ -830,6 +868,8 @@ def solve_max_demand_distance(
     max_violation = float(np.max(np.abs(constraints_fun(res.x))))
     min_demand_viol = float(np.min(demand_ineq_fun(res.x)))
 
+    objective_val = -float(res.fun)
+    status_msg = f"{res.status}: {res.message}"
     return DemandDistanceResult(
         demands_a=d_a,
         demands_b=d_b,
@@ -840,6 +880,8 @@ def solve_max_demand_distance(
         max_violation=max_violation,
         min_demand_viol=min_demand_viol,
         success=bool(res.success),
+        objective=objective_val,
+        solver_status=status_msg,
     )
 
 
@@ -847,6 +889,8 @@ def solve_max_demand_distance_ipopt(
     network: NetworkData,
     sensor_heads: Dict[str, float],
     pipe_resistances: Dict[str, float],
+    measurement_nodes: Optional[Iterable[str]] = None,
+    measurement_heads_equal_only: bool = False,
     c_bounds: Optional[Dict[str, float]] = None,
     C_bounds: Optional[Dict[str, float]] = None,
     reservoir_node: Optional[str] = None,
@@ -862,6 +906,9 @@ def solve_max_demand_distance_ipopt(
 
     reservoir_nodes = set(network.reservoirs.keys())
     fixed_heads = dict(sensor_heads)
+    measurement_set = set(measurement_nodes or [])
+    if measurement_heads_equal_only:
+        fixed_heads = {k: v for k, v in fixed_heads.items() if k not in measurement_set}
     for res_id, res_node in network.reservoirs.items():
         if res_id not in fixed_heads:
             fixed_heads[res_id] = res_node.elevation_m
@@ -908,6 +955,14 @@ def solve_max_demand_distance_ipopt(
 
     m.headlossA = pyo.Constraint(m.P, rule=headloss_A_rule)
     m.headlossB = pyo.Constraint(m.P, rule=headloss_B_rule)
+
+    if measurement_heads_equal_only:
+        def meas_equal_rule(mdl, j):
+            if j not in measurement_set or j in fixed_heads:
+                return pyo.Constraint.Skip
+            return mdl.hA[j] == mdl.hB[j]
+
+        m.measurement_equal = pyo.Constraint(m.J, rule=meas_equal_rule)
 
     def demand_A(j):
         inflow = sum(m.qA[p] for p in pipes if network.pipes[p].end_node == j)
@@ -1007,6 +1062,8 @@ def solve_max_demand_distance_ipopt(
 
     success_flag = term in ok_terms
 
+    objective_val = _compute_objective_value(d_a, d_b, norm_p)
+    status_msg = str(term) if term is not None else None
     return DemandDistanceResult(
         demands_a=d_a,
         demands_b=d_b,
@@ -1017,6 +1074,8 @@ def solve_max_demand_distance_ipopt(
         max_violation=0.0,
         min_demand_viol=min(d_a.values()) if d_a else 0.0,
         success=bool(success_flag),
+        objective=objective_val,
+        solver_status=status_msg,
     )
 
 

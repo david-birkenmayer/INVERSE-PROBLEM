@@ -1,4 +1,4 @@
-  Page 1                                    Tue Mar 10 11:38:10 2026
+  Page 1                                    Wed Apr  1 10:53:55 2026
 
   ******************************************************************
   *                           E P A N E T                          *
@@ -7,6 +7,12 @@
   *                         Version 2.2                            *
   ******************************************************************
   
-  Analysis begun Tue Mar 10 11:38:10 2026
+  Analysis begun Wed Apr  1 10:53:55 2026
 
-  Analysis ended Tue Mar 10 11:38:10 2026
+   
+  Hydraulic Status:
+  -----------------------------------------------------------------------
+     0:00:00: Balanced after 5 trials
+     0:00:00: Reservoir 180 is emptying
+   
+  Analysis ended Wed Apr  1 10:53:55 2026
