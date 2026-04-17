@@ -1,4 +1,0 @@
-measurement_sites,radius,success,max_violation,min_demand_viol,output_dir
-"['20', '50', '60', '100', '120', '140']",0.08156881331545977,True,0.0,1.8365620220063096e-08,data/Anytown-B-batch-20260331-164729/20_50_60_100_120_140
-"['20', '140']",0.08740987232628179,True,0.0,6.667118536706216e-07,data/Anytown-B-batch-20260331-164729/20_140
-[],0.08741611826168631,True,0.0,7.935096136725096e-09,data/Anytown-B-batch-20260331-164729/none

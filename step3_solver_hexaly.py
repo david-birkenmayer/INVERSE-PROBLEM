@@ -143,6 +143,10 @@ def solve_max_demand_distance_hexaly(
     total_demand: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = False,
+    reference_demands: Optional[Dict[str, float]] = None,
+    restriction_mode: Optional[str] = None,
+    radius_to_fixed: Optional[float] = None,
+    deviation_alpha: Optional[float] = None,
     license_path: Optional[str] = None,
     time_limit: Optional[int] = None,
     seed: Optional[int] = None,
@@ -235,6 +239,46 @@ def solve_max_demand_distance_hexaly(
             dB[j] = _sum_expr(m, inflow_b) - _sum_expr(m, outflow_b)
             m.constraint(dA[j] >= demand_lb)
             m.constraint(dB[j] >= demand_lb)
+
+        if restriction_mode is not None:
+            if restriction_mode not in {"radius_to_fixed", "deviation_to_fixed"}:
+                raise ValueError("restriction_mode must be None, 'radius_to_fixed', or 'deviation_to_fixed'.")
+            if reference_demands is None:
+                raise ValueError("reference_demands is required when restriction_mode is set.")
+
+            if restriction_mode == "radius_to_fixed":
+                if radius_to_fixed is None:
+                    raise ValueError("radius_to_fixed must be set for 'radius_to_fixed' mode.")
+                radius_val = float(radius_to_fixed)
+                if math.isinf(norm_p):
+                    for j in junctions:
+                        ref = float(reference_demands.get(j, 0.0))
+                        m.constraint(m.abs(dA[j] - ref) <= radius_val)
+                        m.constraint(m.abs(dB[j] - ref) <= radius_val)
+                else:
+                    if norm_p <= 0:
+                        raise ValueError("norm_p must be positive.")
+                    power = float(norm_p)
+                    terms_a = [m.pow(m.abs(dA[j] - float(reference_demands.get(j, 0.0))), power) for j in junctions]
+                    terms_b = [m.pow(m.abs(dB[j] - float(reference_demands.get(j, 0.0))), power) for j in junctions]
+                    m.constraint(_sum_expr(m, terms_a) <= radius_val ** power)
+                    m.constraint(_sum_expr(m, terms_b) <= radius_val ** power)
+            else:
+                if deviation_alpha is None:
+                    raise ValueError("deviation_alpha must be set for 'deviation_to_fixed' mode.")
+                alpha = float(deviation_alpha)
+                if alpha < 0.0:
+                    raise ValueError("deviation_alpha must be non-negative.")
+                for j in junctions:
+                    ref = float(reference_demands.get(j, 0.0))
+                    low = ref - alpha * ref
+                    high = ref + alpha * ref
+                    if low > high:
+                        low, high = high, low
+                    m.constraint(dA[j] >= low)
+                    m.constraint(dA[j] <= high)
+                    m.constraint(dB[j] >= low)
+                    m.constraint(dB[j] <= high)
 
         if total_demand is not None:
             m.constraint(_sum_expr(m, list(dA.values())) == float(total_demand))

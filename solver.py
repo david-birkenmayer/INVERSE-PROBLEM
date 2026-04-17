@@ -9,8 +9,18 @@ WDN_NAME = "Alperovits"; MEASUREMENT_SITES = 2
 # WDN_NAME = "Anytown"; MEASUREMENT_SITES = 1 # ([], [50, 100]) # 2 # ([], [20, 140], [20,50,60,100,120,140])
 
 
-SCENARIO_FILE = "scenario/Alperovits-base.json"
-PIPE_BOUNDS = False
+### PIPE BOUNDS
+PIPE_BOUNDS = True
+PIPE_BOUND_SAFENESS = 0.85  # in [0, 1], higher means looser bounds
+PIPE_BOUND_METHOD = "perturb"  # "montecarlo" or "perturb"
+PIPE_BOUND_POLICY = "minmax"  # "minmax" or "quantile"
+PIPE_BOUND_PERTURB_SAMPLES = 25
+PIPE_BOUND_PERTURB_SIGMA = 0.10
+PIPE_BOUND_PERTURB_SEED = 1
+PIPE_BOUND_PERTURB_FIX_TOTAL = True
+PIPE_BOUND_PERTURB_BASE = "base"  # "auto", "base", or "scenario"
+
+SCENARIO_SOURCE = "base"  # "base" or "random"
 HEADLOSS_MODEL = "hw"  # "auto", "dw", or "hw"
 
 MULTI_STARTS = 1
@@ -34,6 +44,9 @@ MEASUREMENT_MAX_SUBSETS = 200
 MEASUREMENT_SUBSET_SEED = 1
 MEASUREMENT_SUBSET_MODE = "all"  # "exact" or "all" (sizes 1..p)
 
+SHOW_INTERMEDIATE_PLOTS = True
+SHOW_INTERMEDIATE_PLOTS_MULTIPLE = False
+
 DEBUG_DUMP_ALWAYS = True
 DEBUG_DUMP_EPS = 1e-6
 CHECK_XD_BASE_FEASIBILITY = True
@@ -56,6 +69,13 @@ HEXALY_USE_PATH_HEAD_BOUNDS = True
 
 
 from step1_io import load_inp_network, compute_pipe_resistances, compute_pipe_resistances_hw
+from step2_estimation import (
+	simulate_random_demand_scenarios,
+	simulate_base_flows,
+	simulate_base_scenario,
+	simulate_single_random_scenario,
+	simulate_perturbed_demand_scenarios,
+)
 from step3_solver import (
 	DemandBounds,
 	SolverResult,
@@ -484,11 +504,6 @@ def _write_json(path: str, payload: Dict[str, object]) -> None:
 		json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def _read_json(path: str) -> Dict[str, object]:
-	with open(path, "r", encoding="utf-8") as f:
-		return json.load(f)
-
-
 def _build_parameters_snapshot(
 	headloss_model_local: str | None = None,
 	measurement_nodes: Iterable[str] | None = None,
@@ -496,7 +511,6 @@ def _build_parameters_snapshot(
 ) -> Dict[str, object]:
 	return {
 		"WDN_NAME": WDN_NAME,
-		"SCENARIO_FILE": SCENARIO_FILE,
 		"MEASUREMENT_SITES": MEASUREMENT_SITES,
 		"MEASUREMENT_SUBSET_MODE": MEASUREMENT_SUBSET_MODE,
 		"MEASUREMENT_ALLOWLIST": MEASUREMENT_ALLOWLIST,
@@ -505,6 +519,15 @@ def _build_parameters_snapshot(
 		"MEASUREMENT_SET_COUNT": measurement_sets_count,
 		"MEASUREMENT_NODES": list(measurement_nodes) if measurement_nodes is not None else None,
 		"PIPE_BOUNDS": PIPE_BOUNDS,
+		"PIPE_BOUND_SAFENESS": PIPE_BOUND_SAFENESS,
+		"PIPE_BOUND_METHOD": PIPE_BOUND_METHOD,
+		"PIPE_BOUND_POLICY": PIPE_BOUND_POLICY,
+		"PIPE_BOUND_PERTURB_SAMPLES": PIPE_BOUND_PERTURB_SAMPLES,
+		"PIPE_BOUND_PERTURB_SIGMA": PIPE_BOUND_PERTURB_SIGMA,
+		"PIPE_BOUND_PERTURB_SEED": PIPE_BOUND_PERTURB_SEED,
+		"PIPE_BOUND_PERTURB_FIX_TOTAL": PIPE_BOUND_PERTURB_FIX_TOTAL,
+		"PIPE_BOUND_PERTURB_BASE": PIPE_BOUND_PERTURB_BASE,
+		"SCENARIO_SOURCE": SCENARIO_SOURCE,
 		"HEADLOSS_MODEL": HEADLOSS_MODEL,
 		"HEADLOSS_MODEL_LOCAL": headloss_model_local,
 		"SOLVER": SOLVER,
@@ -521,6 +544,8 @@ def _build_parameters_snapshot(
 		"MULTI_START_NOISE": MULTI_START_NOISE,
 		"MULTI_START_NOISE_REL": MULTI_START_NOISE_REL,
 		"MULTI_START_SEED": MULTI_START_SEED,
+		"SHOW_INTERMEDIATE_PLOTS": SHOW_INTERMEDIATE_PLOTS,
+		"SHOW_INTERMEDIATE_PLOTS_MULTIPLE": SHOW_INTERMEDIATE_PLOTS_MULTIPLE,
 		"DEBUG_DUMP_ALWAYS": DEBUG_DUMP_ALWAYS,
 		"DEBUG_DUMP_EPS": DEBUG_DUMP_EPS,
 		"CHECK_XD_BASE_FEASIBILITY": CHECK_XD_BASE_FEASIBILITY,
@@ -1006,7 +1031,6 @@ def _compute_norm(values: Iterable[float], norm_p: float) -> float:
 
 
 def main() -> None:
-	global PIPE_BOUNDS
 	inp_path = f"./wdn/{WDN_NAME}.inp"
 	wdn_name = WDN_NAME
 	network = load_inp_network(inp_path)
@@ -1017,18 +1041,74 @@ def main() -> None:
 	if first_pipe is not None:
 		print("Example resistance:", first_pipe)
 
-	scenario_payload = _read_json(SCENARIO_FILE)
-	scenario_wdn = str(scenario_payload.get("wdn_name", ""))
-	if scenario_wdn and scenario_wdn != WDN_NAME:
-		raise ValueError(f"SCENARIO_FILE WDN '{scenario_wdn}' does not match WDN_NAME '{WDN_NAME}'.")
+	base_flows = simulate_base_flows(inp_path=inp_path)
+	if PIPE_BOUNDS:
+		if PIPE_BOUND_METHOD == "perturb":
+			base_demands_override = None
+			if PIPE_BOUND_PERTURB_BASE in {"base", "auto"}:
+				try:
+					simulate_base_flows(inp_path=inp_path, simulator="auto")
+				except Exception:
+					if PIPE_BOUND_PERTURB_BASE == "base":
+						raise
+					base_demands_override, _, _ = simulate_single_random_scenario(
+						inp_path=inp_path,
+						demand_log_sigma=0.3,
+						seed=2,
+						simulator="auto",
+					)
+			elif PIPE_BOUND_PERTURB_BASE == "scenario":
+				base_demands_override, _, _ = simulate_single_random_scenario(
+					inp_path=inp_path,
+					demand_log_sigma=0.3,
+					seed=2,
+					simulator="auto",
+				)
+			else:
+				raise ValueError("PIPE_BOUND_PERTURB_BASE must be 'auto', 'base', or 'scenario'.")
 
-	scenario_demands = {k: float(v) for k, v in scenario_payload["scenario_demands"].items()}
-	scenario_heads = {k: float(v) for k, v in scenario_payload["scenario_heads"].items()}
-	scenario_flows = {k: float(v) for k, v in scenario_payload["scenario_flows"].items()}
+			flows_by_pipe = simulate_perturbed_demand_scenarios(
+				inp_path=inp_path,
+				n_scenarios=PIPE_BOUND_PERTURB_SAMPLES,
+				demand_sigma=PIPE_BOUND_PERTURB_SIGMA,
+				base_demands=base_demands_override,
+				enforce_total_demand=PIPE_BOUND_PERTURB_FIX_TOTAL,
+				seed=PIPE_BOUND_PERTURB_SEED,
+				simulator="auto",
+			)
+		else:
+			flows_by_pipe = simulate_random_demand_scenarios(
+				inp_path=inp_path,
+				n_scenarios=200,
+				demand_log_sigma=0.3,
+				seed=1,
+				simulator="auto",
+			)
 
-	c_bounds = {k: float(v) for k, v in scenario_payload.get("c_bounds", {}).items()}
-	C_bounds = {k: float(v) for k, v in scenario_payload.get("C_bounds", {}).items()}
-	PIPE_BOUNDS = bool(scenario_payload.get("pipe_bounds_enabled", bool(c_bounds or C_bounds)))
+		c_bounds, C_bounds = _compute_pipe_bounds_from_samples(
+			flows_by_pipe,
+			PIPE_BOUND_POLICY,
+			PIPE_BOUND_SAFENESS,
+		)
+	else:
+		c_bounds = {}
+		C_bounds = {}
+
+	if SCENARIO_SOURCE == "base":
+		scenario_demands_pos, scenario_heads, scenario_flows = simulate_base_scenario(
+			inp_path=inp_path,
+			simulator="auto",
+		)
+	elif SCENARIO_SOURCE == "random":
+		scenario_demands_pos, scenario_heads, scenario_flows = simulate_single_random_scenario(
+			inp_path=inp_path,
+			demand_log_sigma=0.3,
+			seed=2,
+			simulator="auto",
+		)
+	else:
+		raise ValueError("SCENARIO_SOURCE must be 'base' or 'random'.")
+	scenario_demands = {k: v for k, v in scenario_demands_pos.items()}
 	total_demand = float(sum(scenario_demands.values()))
 	total_demand_from_flows = _compute_total_demand_from_flows(network, scenario_flows)
 
@@ -1039,6 +1119,9 @@ def main() -> None:
 	if isinstance(MEASUREMENT_SITES, int):
 		mode = MEASUREMENT_SUBSET_MODE
 		print(f"Measurement subsets: {len(measurement_sets)} (p={MEASUREMENT_SITES}, mode={mode})")
+	show_intermediate_plots = SHOW_INTERMEDIATE_PLOTS
+	if len(measurement_sets) > 1:
+		show_intermediate_plots = SHOW_INTERMEDIATE_PLOTS_MULTIPLE
 
 	master_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 	pipe_tag = "B" if PIPE_BOUNDS else "NB"
@@ -1100,9 +1183,17 @@ def main() -> None:
 			os.path.join(output_dir, "metadata.json"),
 			{
 				"WDN_NAME": WDN_NAME,
-				"SCENARIO_FILE": SCENARIO_FILE,
 				"MEASUREMENT_SITES": measurement_nodes,
 				"PIPE_BOUNDS": PIPE_BOUNDS,
+				"PIPE_BOUND_SAFENESS": PIPE_BOUND_SAFENESS,
+				"PIPE_BOUND_METHOD": PIPE_BOUND_METHOD,
+				"PIPE_BOUND_POLICY": PIPE_BOUND_POLICY,
+				"PIPE_BOUND_PERTURB_SAMPLES": PIPE_BOUND_PERTURB_SAMPLES,
+				"PIPE_BOUND_PERTURB_SIGMA": PIPE_BOUND_PERTURB_SIGMA,
+				"PIPE_BOUND_PERTURB_SEED": PIPE_BOUND_PERTURB_SEED,
+				"PIPE_BOUND_PERTURB_FIX_TOTAL": PIPE_BOUND_PERTURB_FIX_TOTAL,
+				"PIPE_BOUND_PERTURB_BASE": PIPE_BOUND_PERTURB_BASE,
+				"SCENARIO_SOURCE": SCENARIO_SOURCE,
 				"HEADLOSS_MODEL": HEADLOSS_MODEL_LOCAL,
 				"SOLVER": SOLVER,
 				"GLOBAL_SOLVER": None,
@@ -1129,6 +1220,14 @@ def main() -> None:
 				os.path.join(output_dir, "c_bounds.json"),
 				{"c_bounds": c_bounds, "C_bounds": C_bounds},
 			)
+
+		plot_network(
+			inp_path=inp_path,
+			base_flows=base_flows,
+			c_bounds=c_bounds,
+			C_bounds=C_bounds,
+			output_dir=output_dir,
+		)
 
 		sensor_heads = {node_id: scenario_heads[node_id] for node_id in measurement_nodes if node_id in scenario_heads}
 		for res_id in network.reservoirs.keys():
@@ -1237,6 +1336,22 @@ def main() -> None:
 			for key, value in base_violation.items():
 				print(f"  {key}: {value:.3e}")
 
+		head_bounds_for_plot = None
+		if PIPE_BOUNDS:
+			fixed_heads = dict(sensor_heads)
+			if MEASUREMENT_HEADS_EQUAL_ONLY:
+				fixed_heads = {k: v for k, v in fixed_heads.items() if k not in measurement_nodes}
+			for res_id, res_node in network.reservoirs.items():
+				if res_id not in fixed_heads:
+					fixed_heads[res_id] = res_node.elevation_m
+			head_bounds_for_plot = _compute_head_bounds_from_fixed_heads(
+				network=network,
+				pipe_resistances=pipe_resistances,
+				fixed_heads=fixed_heads,
+				c_bounds=c_bounds,
+				C_bounds=C_bounds,
+				head_margin=HEXALY_HEAD_MARGIN,
+			)
 		if SKIP_FEASIBILITY_SOLVE:
 			print("Skipping feasibility solve (using scenario flows/heads as initial guess).")
 		else:
@@ -1298,6 +1413,22 @@ def main() -> None:
 			print(f"Min demand constraint (min): {min_demand_viol:.3e}")
 			print(f"Min demand constraint (max): {max_demand_viol:.3e}")
 
+			base_demands = {node_id: node.base_demand for node_id, node in network.junctions.items()}
+
+			plot_demand_bounds(
+				inp_path=inp_path,
+				measurement_nodes=measurement_nodes,
+				actual_demands=scenario_demands,
+				bounds=bounds,
+				base_flows=base_flows,
+				c_bounds=c_bounds,
+				C_bounds=C_bounds,
+				sensor_heads=sensor_heads,
+				scenario_flows=scenario_flows,
+				base_demands=base_demands,
+				output_dir=output_dir,
+				show_plot=show_intermediate_plots,
+			)
 			res_demand = -sum(scenario_demands.values())
 			_write_json(
 				os.path.join(output_dir, "demand_bounds.json"),
@@ -1342,6 +1473,15 @@ def main() -> None:
 			for k in sorted(single.flows.keys()):
 				print(f"  {k}: {single.flows[k]:.6f}")
 
+			plot_single_solution(
+				inp_path=inp_path,
+				measurement_nodes=measurement_nodes,
+				solution=single,
+				c_bounds=c_bounds,
+				C_bounds=C_bounds,
+				output_dir=output_dir,
+				show_plot=show_intermediate_plots,
+			)
 			res_demand = -sum(single.demands.values())
 			_write_json(
 				os.path.join(output_dir, "single_node_solution.json"),
@@ -1477,6 +1617,25 @@ def main() -> None:
 			print(f"unique local optima (by radius): {len(unique_radii)}")
 
 
+			plot_demand_distance(
+				inp_path=inp_path,
+				measurement_nodes=measurement_nodes,
+				demands_a=best_res.demands_a,
+				demands_b=best_res.demands_b,
+				heads_a=best_res.heads_a,
+				heads_b=best_res.heads_b,
+				flows_a=best_res.flows_a,
+				flows_b=best_res.flows_b,
+				radius=best_radius,
+				norm_p=NORM,
+				measurement_count=len(measurement_nodes),
+				output_dir=output_dir,
+				c_bounds=c_bounds,
+				C_bounds=C_bounds,
+				head_bounds=head_bounds_for_plot,
+				show_head_bounds_measurements=MEASUREMENT_HEADS_EQUAL_ONLY,
+				show_plot=show_intermediate_plots,
+			)
 			res_demand_a = -sum(best_res.demands_a.values())
 			res_demand_b = -sum(best_res.demands_b.values())
 			_write_json(

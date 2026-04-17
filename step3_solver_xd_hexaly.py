@@ -429,6 +429,11 @@ def solve_max_demand_distance_xd_hexaly(
     measurement_heads_equal_only: bool = True,
     headloss_n: float = 2.0,
     cycle_basis_mode: str = "graph",
+    reference_demands: Optional[Dict[str, float]] = None,
+    restriction_mode: Optional[str] = None,
+    radius_to_fixed: Optional[float] = None,
+    deviation_alpha: Optional[float] = None,
+    fixed_demands_b: Optional[Dict[str, float]] = None,
     license_path: Optional[str] = None,
     time_limit: Optional[int] = None,
     seed: Optional[int] = None,
@@ -500,7 +505,51 @@ def solve_max_demand_distance_xd_hexaly(
             dA[j] = _sum_expr(m, inflow_a) - _sum_expr(m, outflow_a)
             dB[j] = _sum_expr(m, inflow_b) - _sum_expr(m, outflow_b)
             m.constraint(dA[j] >= demand_lb)
-            m.constraint(dB[j] >= demand_lb)
+            if fixed_demands_b is not None:
+                ref = float(fixed_demands_b.get(j, 0.0))
+                m.constraint(dB[j] == ref)
+            else:
+                m.constraint(dB[j] >= demand_lb)
+
+        if restriction_mode is not None:
+            if restriction_mode not in {"radius_to_fixed", "deviation_to_fixed"}:
+                raise ValueError("restriction_mode must be None, 'radius_to_fixed', or 'deviation_to_fixed'.")
+            if reference_demands is None:
+                raise ValueError("reference_demands is required when restriction_mode is set.")
+
+            if restriction_mode == "radius_to_fixed":
+                if radius_to_fixed is None:
+                    raise ValueError("radius_to_fixed must be set for 'radius_to_fixed' mode.")
+                radius_val = float(radius_to_fixed)
+                if math.isinf(norm_p):
+                    for j in junctions:
+                        ref = float(reference_demands.get(j, 0.0))
+                        m.constraint(m.abs(dA[j] - ref) <= radius_val)
+                        m.constraint(m.abs(dB[j] - ref) <= radius_val)
+                else:
+                    if norm_p <= 0:
+                        raise ValueError("norm_p must be positive.")
+                    power = float(norm_p)
+                    terms_a = [m.pow(m.abs(dA[j] - float(reference_demands.get(j, 0.0))), power) for j in junctions]
+                    terms_b = [m.pow(m.abs(dB[j] - float(reference_demands.get(j, 0.0))), power) for j in junctions]
+                    m.constraint(_sum_expr(m, terms_a) <= radius_val ** power)
+                    m.constraint(_sum_expr(m, terms_b) <= radius_val ** power)
+            else:
+                if deviation_alpha is None:
+                    raise ValueError("deviation_alpha must be set for 'deviation_to_fixed' mode.")
+                alpha = float(deviation_alpha)
+                if alpha < 0.0:
+                    raise ValueError("deviation_alpha must be non-negative.")
+                for j in junctions:
+                    ref = float(reference_demands.get(j, 0.0))
+                    low = ref - alpha * ref
+                    high = ref + alpha * ref
+                    if low > high:
+                        low, high = high, low
+                    m.constraint(dA[j] >= low)
+                    m.constraint(dA[j] <= high)
+                    m.constraint(dB[j] >= low)
+                    m.constraint(dB[j] <= high)
 
         if total_demand is not None:
             m.constraint(_sum_expr(m, list(dA.values())) == float(total_demand))
@@ -526,13 +575,12 @@ def solve_max_demand_distance_xd_hexaly(
             for j in junctions:
                 m.constraint(t >= m.abs(dA[j] - dB[j]))
             obj_expr = t
-            m.maximize(obj_expr)
         else:
             if norm_p <= 0:
                 raise ValueError("norm_p must be positive.")
             terms = [m.pow(m.abs(dA[j] - dB[j]), float(norm_p)) for j in junctions]
             obj_expr = _sum_expr(m, terms)
-            m.maximize(obj_expr)
+        m.maximize(obj_expr)
 
         m.close()
 
@@ -591,6 +639,169 @@ def solve_max_demand_distance_xd_hexaly(
         heads_b=heads_b,
         flows_a=q_a,
         flows_b=q_b,
+        max_violation=float(max_violation),
+        min_demand_viol=float(min_demand_viol),
+        success=bool(success),
+        objective=objective_val,
+        solver_status=status_msg,
+        best_bound=best_bound,
+    )
+
+
+def solve_max_demand_distance_xd_hexaly_fixed_reference(
+    network: NetworkData,
+    sensor_heads: Dict[str, float],
+    pipe_resistances: Dict[str, float],
+    reference_demands: Dict[str, float],
+    reference_heads: Dict[str, float],
+    reference_flows: Dict[str, float],
+    c_bounds: Optional[Dict[str, float]] = None,
+    C_bounds: Optional[Dict[str, float]] = None,
+    reservoir_node: Optional[str] = None,
+    reservoir_head: Optional[float] = None,
+    reservoir_outflow: Optional[float] = None,
+    initial_guess: Optional[SolverResult] = None,
+    norm_p: float = 2.0,
+    demand_lb: float = 0.0,
+    total_demand: Optional[float] = None,
+    headloss_n: float = 2.0,
+    measurement_nodes: Optional[Iterable[str]] = None,
+    cycle_basis_mode: str = "graph",
+    license_path: Optional[str] = None,
+    time_limit: Optional[int] = None,
+    seed: Optional[int] = None,
+    verbosity: Optional[int] = None,
+) -> DemandDistanceResult:
+    _require_hexaly()
+    import hexaly.optimizer as hx
+
+    if license_path:
+        hx.version.license_path = license_path
+
+    reservoir_nodes = set(network.reservoirs.keys())
+    junctions, pipes = _build_index_maps(network, reservoir_nodes)
+
+    flow_bounds = _estimate_flow_bounds(pipes, c_bounds, C_bounds, initial_guess)
+    x_bounds = _flow_to_head_bounds(pipe_resistances, flow_bounds, headloss_n)
+
+    cycle_rows = _build_cycle_matrix(network, pipes, mode=cycle_basis_mode)
+    path_rows = []
+    if reservoir_node is not None and measurement_nodes:
+        path_rows = _build_path_matrix(
+            network,
+            pipes,
+            pipe_resistances,
+            reservoir_node,
+            measurement_nodes,
+        )
+        x_ref = {p: _phi(pipe_resistances[p], reference_flows.get(p, 0.0), headloss_n) for p in pipes}
+
+    with hx.HexalyOptimizer() as optimizer:
+        m = optimizer.model
+
+        qA = {p: m.float(flow_bounds[p][0], flow_bounds[p][1]) for p in pipes}
+        xA = {p: m.float(x_bounds[p][0], x_bounds[p][1]) for p in pipes}
+
+        for p in pipes:
+            r_e = pipe_resistances[p]
+            m.constraint(xA[p] == r_e * qA[p] * m.pow(m.abs(qA[p]), headloss_n - 1.0))
+
+        for row in cycle_rows:
+            m.constraint(_sum_expr(m, [coef * xA[p] for p, coef in row.items()]) == 0.0)
+
+        for row in path_rows:
+            ref_val = sum(coef * x_ref.get(p, 0.0) for p, coef in row.items())
+            m.constraint(_sum_expr(m, [coef * xA[p] for p, coef in row.items()]) == float(ref_val))
+
+        dA = {}
+        for j in junctions:
+            inflow_a = []
+            outflow_a = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.end_node == j:
+                    inflow_a.append(qA[p])
+                if pipe.start_node == j:
+                    outflow_a.append(qA[p])
+            dA[j] = _sum_expr(m, inflow_a) - _sum_expr(m, outflow_a)
+            m.constraint(dA[j] >= demand_lb)
+
+        if total_demand is not None:
+            m.constraint(_sum_expr(m, list(dA.values())) == float(total_demand))
+
+        if reservoir_node is not None and reservoir_outflow is not None:
+            net_a = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.start_node == reservoir_node:
+                    net_a.append(qA[p])
+                if pipe.end_node == reservoir_node:
+                    net_a.append(-qA[p])
+            m.constraint(_sum_expr(m, net_a) == float(reservoir_outflow))
+
+        if math.isinf(norm_p):
+            t_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0
+            t = m.float(0.0, 10.0 * t_ub)
+            for j in junctions:
+                ref = float(reference_demands.get(j, 0.0))
+                m.constraint(t >= m.abs(dA[j] - ref))
+            obj_expr = t
+            m.maximize(obj_expr)
+        else:
+            if norm_p <= 0:
+                raise ValueError("norm_p must be positive.")
+            terms = []
+            for j in junctions:
+                ref = float(reference_demands.get(j, 0.0))
+                terms.append(m.pow(m.abs(dA[j] - ref), float(norm_p)))
+            obj_expr = _sum_expr(m, terms)
+            m.maximize(obj_expr)
+
+        m.close()
+
+        if time_limit is not None:
+            optimizer.param.time_limit = int(time_limit)
+        if seed is not None:
+            optimizer.param.seed = int(seed)
+        if verbosity is not None:
+            optimizer.param.verbosity = int(verbosity)
+
+        optimizer.solve()
+        status = optimizer.solution.status
+        success = status in {hx.HxSolutionStatus.FEASIBLE, hx.HxSolutionStatus.OPTIMAL}
+        best_bound = None
+        try:
+            best_bound = getattr(optimizer.solution, "best_bound", None)
+        except Exception:
+            best_bound = None
+
+        q_a = {p: float(qA[p].value) for p in pipes}
+        x_a = {p: float(xA[p].value) for p in pipes}
+        d_a = {j: float(dA[j].value) for j in junctions}
+
+    heads_a = _compute_heads_from_x(
+        network,
+        pipes,
+        x_a,
+        pipe_resistances,
+        reservoir_node,
+        reservoir_head,
+    )
+
+    max_violation = 0.0
+    min_demand_viol = 0.0
+    if d_a:
+        min_demand_viol = min(d_a.values()) - demand_lb
+    objective_val = _compute_objective_value(d_a, reference_demands, norm_p)
+    status_msg = str(status)
+
+    return DemandDistanceResult(
+        demands_a=d_a,
+        demands_b=reference_demands,
+        heads_a=heads_a,
+        heads_b=reference_heads,
+        flows_a=q_a,
+        flows_b=reference_flows,
         max_violation=float(max_violation),
         min_demand_viol=float(min_demand_viol),
         success=bool(success),
