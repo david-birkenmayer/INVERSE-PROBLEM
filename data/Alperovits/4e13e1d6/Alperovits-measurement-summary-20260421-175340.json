@@ -1,0 +1,214 @@
+{
+  "results": [
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1",
+        "6"
+      ],
+      "min_demand_viol": 0.0765373210952092,
+      "objective": 0.005134283306865955,
+      "output_dir": "data/Alperovits/4e13e1d6/1_6",
+      "radius": 0.07165391340928948,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "4",
+        "5"
+      ],
+      "min_demand_viol": 0.08161345275408086,
+      "objective": 0.007201756903090159,
+      "output_dir": "data/Alperovits/4e13e1d6/4_5",
+      "radius": 0.08486316576165516,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1",
+        "5"
+      ],
+      "min_demand_viol": 0.08028427448286099,
+      "objective": 0.008070734256774457,
+      "output_dir": "data/Alperovits/4e13e1d6/1_5",
+      "radius": 0.08983726541238027,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "3",
+        "5"
+      ],
+      "min_demand_viol": 0.09999896423725022,
+      "objective": 0.00818717273090978,
+      "output_dir": "data/Alperovits/4e13e1d6/3_5",
+      "radius": 0.09048299691604926,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "5",
+        "6"
+      ],
+      "min_demand_viol": 0.08161344774673038,
+      "objective": 0.008288359546528611,
+      "output_dir": "data/Alperovits/4e13e1d6/5_6",
+      "radius": 0.09104042808845207,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "3",
+        "4"
+      ],
+      "min_demand_viol": 0.09223399008765601,
+      "objective": 0.008734942485643663,
+      "output_dir": "data/Alperovits/4e13e1d6/3_4",
+      "radius": 0.09346091421360944,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1",
+        "4"
+      ],
+      "min_demand_viol": 0.07402802795772809,
+      "objective": 0.008750302841160455,
+      "output_dir": "data/Alperovits/4e13e1d6/1_4",
+      "radius": 0.09354305340943525,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "3",
+        "6"
+      ],
+      "min_demand_viol": 0.09151234030485081,
+      "objective": 0.00880370136599507,
+      "output_dir": "data/Alperovits/4e13e1d6/3_6",
+      "radius": 0.09382804146946193,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2",
+        "5"
+      ],
+      "min_demand_viol": 0.08161344346324798,
+      "objective": 0.009609548358580437,
+      "output_dir": "data/Alperovits/4e13e1d6/2_5",
+      "radius": 0.09802830386465144,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1",
+        "3"
+      ],
+      "min_demand_viol": 0.08300193502420602,
+      "objective": 0.009845231045511537,
+      "output_dir": "data/Alperovits/4e13e1d6/1_3",
+      "radius": 0.09922313765201914,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "4",
+        "6"
+      ],
+      "min_demand_viol": 0.07402806845599355,
+      "objective": 0.010294268873296465,
+      "output_dir": "data/Alperovits/4e13e1d6/4_6",
+      "radius": 0.10146067648747699,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2",
+        "3"
+      ],
+      "min_demand_viol": 0.07950408275901386,
+      "objective": 0.010397281436447173,
+      "output_dir": "data/Alperovits/4e13e1d6/2_3",
+      "radius": 0.10196706054627236,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2",
+        "4"
+      ],
+      "min_demand_viol": 0.07402803157515372,
+      "objective": 0.010480897961968357,
+      "output_dir": "data/Alperovits/4e13e1d6/2_4",
+      "radius": 0.10237625682729545,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1",
+        "2"
+      ],
+      "min_demand_viol": 0.0765397355980734,
+      "objective": 0.010494800815105334,
+      "output_dir": "data/Alperovits/4e13e1d6/1_2",
+      "radius": 0.10244413509374431,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2",
+        "6"
+      ],
+      "min_demand_viol": 0.07332272484083138,
+      "objective": 0.010579181456917455,
+      "output_dir": "data/Alperovits/4e13e1d6/2_6",
+      "radius": 0.10285514793590769,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}

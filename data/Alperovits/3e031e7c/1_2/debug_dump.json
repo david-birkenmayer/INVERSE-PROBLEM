@@ -1,0 +1,205 @@
+{
+  "junctions": {
+    "1": {
+      "demand_a": 0.24684263933781803,
+      "demand_b": 0.13321638286585533,
+      "demand_lb": 1e-06,
+      "head_a": 207.8204224664835,
+      "head_a_tag": "",
+      "head_b": 207.8204224664835,
+      "head_b_tag": "",
+      "head_lb": 193.62708714484413,
+      "head_ub": 226.37291285515587
+    },
+    "2": {
+      "demand_a": 0.1168362281258859,
+      "demand_b": 0.10092862045523154,
+      "demand_lb": 1e-06,
+      "head_a": 208.3993620394407,
+      "head_a_tag": "",
+      "head_b": 208.3993620394407,
+      "head_b_tag": "",
+      "head_lb": 197.73885171300606,
+      "head_ub": 222.26114828699394
+    },
+    "3": {
+      "demand_a": 0.10070060575234879,
+      "demand_b": 0.07416253997044131,
+      "demand_lb": 1e-06,
+      "head_a": 208.10818423860786,
+      "head_a_tag": "",
+      "head_b": 208.10461653698565,
+      "head_b_tag": "",
+      "head_lb": 195.6583771104362,
+      "head_ub": 224.3416228895638
+    },
+    "4": {
+      "demand_a": 0.11677852847627168,
+      "demand_b": 0.10988143481518275,
+      "demand_lb": 1e-06,
+      "head_a": 207.96048567002038,
+      "head_a_tag": "",
+      "head_b": 207.94137841031383,
+      "head_b_tag": "",
+      "head_lb": 194.40450298777,
+      "head_ub": 225.59549701223
+    },
+    "5": {
+      "demand_a": 0.22550076305861544,
+      "demand_b": 0.3314942869852583,
+      "demand_lb": 1e-06,
+      "head_a": 207.9268584457899,
+      "head_a_tag": "",
+      "head_b": 207.8936019195903,
+      "head_b_tag": "",
+      "head_lb": 194.28361303052068,
+      "head_ub": 225.71638696947932
+    },
+    "6": {
+      "demand_a": 0.31334124001743174,
+      "demand_b": 0.3703167396764023,
+      "demand_lb": 1e-06,
+      "head_a": 207.82004473351586,
+      "head_a_tag": "",
+      "head_b": 207.80877298532997,
+      "head_b_tag": "",
+      "head_lb": 193.56687411412554,
+      "head_ub": 226.43312588587446
+    }
+  },
+  "metadata": {
+    "DEMAND_LB": 1e-06,
+    "DEMAND_RESTRICTION_MODE": null,
+    "DEVIATION_ALPHA": null,
+    "FIX_TOTAL_DEMAND": true,
+    "GLOBAL_SOLVER": null,
+    "HEADLOSS_MODEL": "hw",
+    "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+    "MEASUREMENT_SITES": [
+      "1",
+      "2"
+    ],
+    "MULTI_STARTS": 1,
+    "MULTI_START_NOISE": 0.05,
+    "MULTI_START_NOISE_REL": 0.25,
+    "NORM": 2.0,
+    "OUTPUT_DIR": "data/Alperovits/3e031e7c",
+    "PIPE_BOUNDS": true,
+    "RADIUS_TO_FIXED": null,
+    "SCENARIO": "base",
+    "SCENARIO_FILE": "scenario/Alperovits/base.json",
+    "SOLVER": "Hexaly_xd",
+    "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+    "WDN": "Alperovits",
+    "WDN_NAME": "Alperovits",
+    "output_dir": "data/Alperovits/3e031e7c/1_2",
+    "timestamp": "20260421-175331"
+  },
+  "output_dir": "data/Alperovits/3e031e7c/1_2",
+  "pipes": {
+    "1": {
+      "flow_a": 1.1200000047683716,
+      "flow_a_tag": "lb",
+      "flow_b": 1.1200000047683716,
+      "flow_b_tag": "lb",
+      "flow_lb": 1.1200000047683716,
+      "flow_ub": 1.1200000047683716,
+      "headloss_res_a": -10.660510326434622,
+      "headloss_res_b": -10.660510326434622
+    },
+    "2": {
+      "flow_a": 0.44624891831646557,
+      "flow_a_tag": "",
+      "flow_b": 0.449192987354208,
+      "flow_b_tag": "",
+      "flow_lb": 0.44622185826301575,
+      "flow_ub": 0.4613533318042755,
+      "headloss_res_a": -1.6552999712696093,
+      "headloss_res_b": -1.6775002571221636
+    },
+    "3": {
+      "flow_a": 0.5569148583260201,
+      "flow_a_tag": "",
+      "flow_b": 0.569878396958932,
+      "flow_b_tag": "",
+      "flow_lb": 0.5568748712539673,
+      "flow_ub": 0.5840606689453125,
+      "headloss_res_a": -2.592729265264115,
+      "headloss_res_b": -2.7164005337559725
+    },
+    "4": {
+      "flow_a": 0.13911865208758153,
+      "flow_a_tag": "lb",
+      "flow_b": 0.1681672085419196,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.13911864161491394,
+      "flow_ub": 0.16816721856594086,
+      "headloss_res_a": -0.15554867983709006,
+      "headloss_res_b": -0.2286487690003965
+    },
+    "5": {
+      "flow_a": 0.30101767776216687,
+      "flow_a_tag": "",
+      "flow_b": 0.29182975360182967,
+      "flow_b_tag": "",
+      "flow_lb": 0.27015259861946106,
+      "flow_ub": 0.3175203204154968,
+      "headloss_res_a": -0.745243672566565,
+      "headloss_res_b": -0.6998370518076489
+    },
+    "6": {
+      "flow_a": 0.012323562255264884,
+      "flow_a_tag": "lb",
+      "flow_b": 0.0784869860745726,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.012323553673923016,
+      "flow_ub": 0.07848699390888214,
+      "headloss_res_a": -0.0011067240342226812,
+      "headloss_res_b": -0.04856353754452585
+    },
+    "7": {
+      "flow_a": 0.3455483125641168,
+      "flow_a_tag": "lb",
+      "flow_b": 0.3750304473837667,
+      "flow_b_tag": "ub",
+      "flow_lb": 0.3455483019351959,
+      "flow_ub": 0.3750304579734802,
+      "headloss_res_a": -0.9857865145875955,
+      "headloss_res_b": -1.163749384881895
+    },
+    "8": {
+      "flow_a": 0.2591662015930829,
+      "flow_a_tag": "ub",
+      "flow_b": 0.21170336894042793,
+      "flow_b_tag": "lb",
+      "flow_lb": 0.211703360080719,
+      "flow_ub": 0.2591662108898163,
+      "headloss_res_a": -0.5500898592687806,
+      "headloss_res_b": -0.3648977303504504
+    }
+  },
+  "summary": {
+    "flow_at_bounds": {
+      "a_lb": 4,
+      "a_ub": 1,
+      "b_lb": 2,
+      "b_ub": 3
+    },
+    "head_at_bounds": {
+      "a_lb": 0,
+      "a_ub": 0,
+      "b_lb": 0,
+      "b_ub": 0
+    },
+    "head_bounds_count": 6,
+    "junction_count": 6,
+    "min_demand_slack_a": 0.10069960575234879,
+    "min_demand_slack_b": 0.07416153997044131,
+    "pipe_count": 8,
+    "total_demand_a": 1.1200000047683716,
+    "total_demand_b": 1.1200000047683714,
+    "total_demand_res_a": 0.0,
+    "total_demand_res_b": -2.220446049250313e-16,
+    "total_demand_target": 1.1200000047683716
+  }
+}

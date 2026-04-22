@@ -1,0 +1,100 @@
+{
+  "results": [
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 0,
+      "measurement_sites": [],
+      "min_demand_viol": 0.07119044176769077,
+      "objective": 0.010894254656446846,
+      "output_dir": "data/Alperovits/384aaa05/none",
+      "radius": 0.10437554625699856,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "5"
+      ],
+      "min_demand_viol": 0.08161344346324798,
+      "objective": 0.009609548358580437,
+      "output_dir": "data/Alperovits/384aaa05/5",
+      "radius": 0.09802830386465144,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "3"
+      ],
+      "min_demand_viol": 0.07950408275901386,
+      "objective": 0.010397281436447173,
+      "output_dir": "data/Alperovits/384aaa05/3",
+      "radius": 0.10196706054627236,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "4"
+      ],
+      "min_demand_viol": 0.07402803157515372,
+      "objective": 0.010480897961968357,
+      "output_dir": "data/Alperovits/384aaa05/4",
+      "radius": 0.10237625682729545,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "1"
+      ],
+      "min_demand_viol": 0.0765397355980734,
+      "objective": 0.010494800815105334,
+      "output_dir": "data/Alperovits/384aaa05/1",
+      "radius": 0.10244413509374431,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "6"
+      ],
+      "min_demand_viol": 0.07332272484083138,
+      "objective": 0.010579181456917455,
+      "output_dir": "data/Alperovits/384aaa05/6",
+      "radius": 0.10285514793590769,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "2"
+      ],
+      "min_demand_viol": 0.07119453353835656,
+      "objective": 0.010893013468814324,
+      "output_dir": "data/Alperovits/384aaa05/2",
+      "radius": 0.10436960030973734,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}

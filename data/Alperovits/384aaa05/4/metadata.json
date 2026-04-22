@@ -1,0 +1,27 @@
+{
+  "DEMAND_LB": 1e-06,
+  "DEMAND_RESTRICTION_MODE": null,
+  "DEVIATION_ALPHA": null,
+  "FIX_TOTAL_DEMAND": true,
+  "GLOBAL_SOLVER": null,
+  "HEADLOSS_MODEL": "hw",
+  "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+  "MEASUREMENT_SITES": [
+    "4"
+  ],
+  "MULTI_STARTS": 1,
+  "MULTI_START_NOISE": 0.05,
+  "MULTI_START_NOISE_REL": 0.25,
+  "NORM": 2.0,
+  "OUTPUT_DIR": "data/Alperovits/384aaa05",
+  "PIPE_BOUNDS": true,
+  "RADIUS_TO_FIXED": null,
+  "SCENARIO": "base",
+  "SCENARIO_FILE": "scenario/Alperovits/base.json",
+  "SOLVER": "Hexaly_xd",
+  "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
+  "WDN": "Alperovits",
+  "WDN_NAME": "Alperovits",
+  "output_dir": "data/Alperovits/384aaa05/4",
+  "timestamp": "20260421-175245"
+}
