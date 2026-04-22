@@ -1,4 +1,5 @@
 from typing import Dict, Tuple
+import argparse
 import json
 import os
 from datetime import datetime
@@ -14,7 +15,7 @@ from step2_estimation import (
 
 
 ### NETWORK AND SCENARIO
-WDN_NAME = "Alperovits"
+WDN = "Alperovits"
 SCENARIO_NAME = "Alperovits-base"
 SCENARIO_SOURCE = "base"  # "base" or "random"
 
@@ -88,10 +89,51 @@ def _write_json(path: str, payload: Dict[str, object]) -> None:
 		json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def _read_json(path: str) -> Dict[str, object]:
+	with open(path, "r", encoding="utf-8") as f:
+		return json.load(f)
+
+
+def _apply_config(config: Dict[str, object]) -> None:
+	global WDN
+	if "WDN" in config:
+		WDN = str(config["WDN"])
+	elif "WDN_NAME" in config:
+		WDN = str(config["WDN_NAME"])
+
+	keys = {
+		"SCENARIO_NAME",
+		"SCENARIO_SOURCE",
+		"PIPE_BOUNDS",
+		"PIPE_BOUND_SAFENESS",
+		"PIPE_BOUND_METHOD",
+		"PIPE_BOUND_POLICY",
+		"PIPE_BOUND_PERTURB_SAMPLES",
+		"PIPE_BOUND_PERTURB_SIGMA",
+		"PIPE_BOUND_PERTURB_SEED",
+		"PIPE_BOUND_PERTURB_FIX_TOTAL",
+		"PIPE_BOUND_PERTURB_BASE",
+	}
+	for key in keys:
+		if key in config:
+			globals()[key] = config[key]
+
+
 def main() -> None:
-	inp_path = f"./wdn/{WDN_NAME}.inp"
+	parser = argparse.ArgumentParser()
+	parser.add_argument("--config", help="Path to scenario config JSON", default=None)
+	parser.add_argument("--output", help="Override scenario output path", default=None)
+	args = parser.parse_args()
+
+	if args.config:
+		config = _read_json(args.config)
+		_apply_config(config)
+	else:
+		config = {}
+
+	inp_path = f"./wdn/{WDN}.inp"
 	network = load_inp_network(inp_path)
-	print(f"Using network: {WDN_NAME} ({inp_path})")
+	print(f"Using network: {WDN} ({inp_path})")
 	print(f"Loaded {len(network.nodes)} nodes and {len(network.pipes)} pipes.")
 
 	base_flows = simulate_base_flows(inp_path=inp_path)
@@ -164,16 +206,20 @@ def main() -> None:
 
 	scenario_demands = {k: v for k, v in scenario_demands_pos.items()}
 
-	scenario_dir = "scenario"
+	scenario_dir = os.path.join("scenario", WDN)
 	os.makedirs(scenario_dir, exist_ok=True)
 	timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 	output_path = os.path.join(scenario_dir, f"{SCENARIO_NAME}.json")
+	if args.output:
+		output_path = args.output
 
 	payload = {
-		"wdn_name": WDN_NAME,
+		"wdn": WDN,
+		"wdn_name": WDN,
 		"inp_path": inp_path,
 		"scenario_name": SCENARIO_NAME,
 		"scenario_source": SCENARIO_SOURCE,
+		"scenario_hash": config.get("SCENARIO_HASH"),
 		"pipe_bounds_enabled": PIPE_BOUNDS,
 		"pipe_bounds_params": {
 			"PIPE_BOUND_SAFENESS": PIPE_BOUND_SAFENESS,
