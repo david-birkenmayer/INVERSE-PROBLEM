@@ -111,10 +111,10 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 
 
 def _load_index_with_legacy(path: str, legacy_path: str) -> Dict[str, str]:
-	index = load_index(path)
+	index = load_index(path, ROOT_DIR)
 	if index:
 		return index
-	return load_index(legacy_path)
+	return load_index(legacy_path, ROOT_DIR)
 
 
 class SolverWorker(QtCore.QThread):
@@ -287,8 +287,10 @@ class LocalSearchWorker(QtCore.QThread):
 		payload["MEASUREMENT_SITES"] = nodes
 		solver_hash = compute_hash(payload)
 		cached_dir = self._index.get(solver_hash)
-		if cached_dir and os.path.isdir(cached_dir):
-			return self._read_radius(cached_dir, nodes, cached=True)
+		if cached_dir:
+			resolved_dir = cached_dir if os.path.isabs(cached_dir) else os.path.join(ROOT_DIR, cached_dir)
+			if os.path.isdir(resolved_dir):
+				return self._read_radius(resolved_dir, nodes, cached=True)
 		output_dir = os.path.join("data", self._wdn, solver_hash[:8])
 		payload["OUTPUT_DIR"] = output_dir
 		payload["SOLVER_HASH"] = solver_hash
@@ -301,12 +303,13 @@ class LocalSearchWorker(QtCore.QThread):
 			capture_output=True,
 			text=True,
 		)
-		if proc.returncode != 0 or not os.path.isdir(output_dir):
+		resolvedout = output_dir if os.path.isabs(output_dir) else os.path.join(ROOT_DIR, output_dir)
+		if proc.returncode != 0 or not os.path.isdir(resolvedout):
 			self.status_updated.emit(f"Solver failed for {nodes}: {proc.stderr.strip()[:200]}")
 			return None
 		self._index[solver_hash] = output_dir
-		save_index(self._index_path, self._index)
-		return self._read_radius(output_dir, nodes, cached=False)
+		save_index(self._index_path, self._index, ROOT_DIR)
+		return self._read_radius(resolvedout, nodes, cached=False)
 
 	def _read_radius(self, output_dir: str, nodes: List[str], *, cached: bool) -> "float | None":
 		dd_path = os.path.join(output_dir, "demand_distance.json")
@@ -1450,7 +1453,8 @@ class MainWindow(QtWidgets.QMainWindow):
 		index_path = _scenario_index_path(wdn)
 		index = _load_index_with_legacy(index_path, LEGACY_SCENARIO_INDEX)
 		cached_path = index.get(scenario_hash)
-		if cached_path and os.path.exists(cached_path):
+		resolved_scenario = (cached_path if os.path.isabs(cached_path) else os.path.join(ROOT_DIR, cached_path)) if cached_path else None
+		if resolved_scenario and os.path.exists(resolved_scenario):
 			self.status_bar.showMessage(f"Scenario cached: {cached_path}")
 			self.solver_scenario_name.setText(str(payload.get("SCENARIO_NAME", "")))
 			return
@@ -1472,7 +1476,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			return
 
 		index[scenario_hash] = output_path
-		save_index(index_path, index)
+		save_index(index_path, index, ROOT_DIR)
 		self.status_bar.showMessage(f"Scenario ready: {output_path}")
 		self.solver_scenario_name.setText(str(scenario_name))
 		try:
@@ -1542,9 +1546,10 @@ class MainWindow(QtWidgets.QMainWindow):
 		index_path = _data_index_path(wdn)
 		index = _load_index_with_legacy(index_path, LEGACY_DATA_INDEX)
 		cached_dir = index.get(solver_hash)
-		if cached_dir and os.path.isdir(cached_dir):
-			self.status_bar.showMessage(f"Run {label} cached: {cached_dir}")
-			self._completed_runs.append((label, 0, "", "", cached_dir))
+		resolved_cached = (cached_dir if os.path.isabs(cached_dir) else os.path.join(ROOT_DIR, cached_dir)) if cached_dir else None
+		if resolved_cached and os.path.isdir(resolved_cached):
+			self.status_bar.showMessage(f"Run {label} cached: {resolved_cached}")
+			self._completed_runs.append((label, 0, "", "", resolved_cached))
 			self._pending_runs.pop(0)
 			self._start_next_solver_run()
 			return
@@ -1592,11 +1597,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		completed = subprocess.CompletedProcess(fake_cmd, returncode, stdout=stdout, stderr=stderr)
 		self._store_output(f"Solver Output ({label})", fake_cmd, completed)
 
-		if returncode == 0 and os.path.isdir(output_dir):
+		resolvedout = output_dir if os.path.isabs(output_dir) else os.path.join(ROOT_DIR, output_dir)
+		if returncode == 0 and os.path.isdir(resolvedout):
 			if isinstance(index, dict):
 				solver_hash = str(payload.get("SOLVER_HASH", ""))
 				index[solver_hash] = output_dir
-				save_index(index_path, index)
+				save_index(index_path, index, ROOT_DIR)
 			self.status_bar.showMessage(f"Run {label} done: {output_dir}")
 		else:
 			output_dir = ""

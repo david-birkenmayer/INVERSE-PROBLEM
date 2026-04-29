@@ -7,7 +7,7 @@
   "HEADLOSS_MODEL": "hw",
   "MEASUREMENT_HEADS_EQUAL_ONLY": true,
   "MEASUREMENT_SITES": [
-    "2"
+    "3"
   ],
   "MULTI_STARTS": 1,
   "MULTI_START_NOISE": 0.05,
@@ -22,6 +22,6 @@
   "USE_RESERVOIR_OUTFLOW_CONSTRAINT": false,
   "WDN": "Alperovits",
   "WDN_NAME": "Alperovits",
-  "output_dir": "data/Alperovits/895be2d9/2",
-  "timestamp": "20260429-110837"
+  "output_dir": "data/Alperovits/895be2d9/3",
+  "timestamp": "20260429-103217"
 }
