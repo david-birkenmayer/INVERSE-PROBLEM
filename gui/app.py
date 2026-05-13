@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
@@ -559,6 +560,7 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._node_pos: Dict[str, tuple[float, float]] = {}
 		self._measurement_set: set[str] = set()
 		self._reservoir_set: set[str] = set()
+		self._show_sensors_mode = False
 		self._network = None
 		self._pipe_classes: Optional[Dict[str, Dict[str, float]]] = None
 		self._init_ui()
@@ -611,6 +613,10 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._measurement_set = set(nodes)
 		self._redraw()
 
+	def set_show_sensors_mode(self, enabled: bool) -> None:
+		self._show_sensors_mode = bool(enabled)
+		self._redraw()
+
 	def get_junction_nodes(self) -> List[str]:
 		if self._network is None:
 			return []
@@ -641,29 +647,41 @@ class NetworkPlot(QtWidgets.QWidget):
 			end = self._node_pos.get(pipe.end_node)
 			if start is None or end is None:
 				continue
-			self.ax.plot([start[0], end[0]], [start[1], end[1]], color="#a0aec0", linewidth=1.0, zorder=1)
+			edge_color = "#cbd5e0" if self._show_sensors_mode else "#a0aec0"
+			edge_alpha = 0.35 if self._show_sensors_mode else 1.0
+			self.ax.plot([start[0], end[0]], [start[1], end[1]], color=edge_color, linewidth=1.0, alpha=edge_alpha, zorder=1)
 
 		junctions = [n for n in self._node_ids if n not in self._reservoir_set]
 		measurements = [n for n in junctions if n in self._measurement_set]
 		others = [n for n in junctions if n not in self._measurement_set]
 		reservoirs = [n for n in self._node_ids if n in self._reservoir_set]
 
-		def _scatter(nodes: List[str], marker: str, color: str, edge: str) -> None:
+		def _scatter(nodes: List[str], marker: str, color: str, edge: str, size: float = 110.0, alpha: float = 1.0) -> None:
 			if not nodes:
 				return
 			xs = [self._node_pos[n][0] for n in nodes]
 			ys = [self._node_pos[n][1] for n in nodes]
-			self.ax.scatter(xs, ys, s=110, marker=marker, c=color, edgecolors=edge, zorder=2)
+			self.ax.scatter(xs, ys, s=size, marker=marker, c=color, edgecolors=edge, alpha=alpha, zorder=2)
 
-		_scatter(others, "o", "#f2f2f2", "#333333")
-		_scatter(measurements, "h", "#90cdf4", "#1a365d")
-		_scatter(reservoirs, "s", "#90cdf4", "#1a365d")
+		if self._show_sensors_mode:
+			_scatter(others, "o", "#e2e8f0", "#94a3b8", size=70.0, alpha=0.45)
+			_scatter(measurements, "h", "#ffdd57", "#8a5a00", size=190.0, alpha=1.0)
+			_scatter(reservoirs, "s", "#90cdf4", "#1a365d", size=135.0, alpha=0.95)
+		else:
+			_scatter(others, "o", "#f2f2f2", "#333333")
+			_scatter(measurements, "h", "#90cdf4", "#1a365d")
+			_scatter(reservoirs, "s", "#90cdf4", "#1a365d")
 
 		for node_id in self._node_ids:
 			pos = self._node_pos.get(node_id)
 			if pos is None:
 				continue
-			self.ax.text(pos[0], pos[1], str(node_id), fontsize=7, ha="center", va="center", color="#111111", zorder=3)
+			if self._show_sensors_mode and node_id not in self._measurement_set and node_id not in self._reservoir_set:
+				continue
+			label = str(node_id)
+			if self._show_sensors_mode and node_id in self._measurement_set:
+				label = f"{label} (S)"
+			self.ax.text(pos[0], pos[1], label, fontsize=7, ha="center", va="center", color="#111111", zorder=3)
 
 		if self._pipe_classes:
 			base_flows = self._pipe_classes.get("base_flows", {})
@@ -683,6 +701,8 @@ class NetworkPlot(QtWidgets.QWidget):
 				self.ax.text(x, y, label, fontsize=6, ha="center", va="center", color="#111111", zorder=4)
 
 		wdn_name = title_override if title_override else "Network"
+		if self._show_sensors_mode:
+			wdn_name = f"{wdn_name} | sensors: {len(measurements)}"
 		self.ax.set_title(wdn_name)
 		self.ax.axis("off")
 		self.canvas.draw_idle()
@@ -1245,6 +1265,11 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._pending_runs: List[tuple[str, Dict[str, object]]] = []
 		self._completed_runs: List[tuple] = []
 		self._active_run_label: str = ""
+		self._gnn_last_log_time: float = 0.0
+		self._gnn_watchdog_warned: bool = False
+		self._gnn_watchdog_timer = QtCore.QTimer(self)
+		self._gnn_watchdog_timer.setInterval(5000)
+		self._gnn_watchdog_timer.timeout.connect(self._gnn_watchdog_tick)
 		self._init_ui()
 		self._ls_worker: LocalSearchWorker | None = None
 		self._load_network()
@@ -1306,6 +1331,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.plot = NetworkPlot()
 		self.plot.measurement_changed.connect(self._measurement_updated)
 		splitter.addWidget(self.plot)
+		self._apply_show_sensors_mode(self.show_sensors_mode.isChecked())
 		splitter.setStretchFactor(1, 1)
 		self._measurement_text_changed(self.measurement_list.text())
 
@@ -1475,6 +1501,10 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.measurement_list.setPlaceholderText("blank/#0, #a, #a-#b, or comma-separated node ids")
 		self.measurement_list.textChanged.connect(self._measurement_text_changed)
 		shared_form.addRow("Measurements", self.measurement_list)
+		self.show_sensors_mode = QtWidgets.QCheckBox("Show sensors")
+		self.show_sensors_mode.setChecked(False)
+		self.show_sensors_mode.toggled.connect(self._apply_show_sensors_mode)
+		shared_form.addRow("Visualization", self.show_sensors_mode)
 		outer.addWidget(shared_group)
 
 		# Options row
@@ -1613,7 +1643,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		ds_form.addRow("Num simulations:", self.gnn_num_sims)
 
 		self.gnn_demand_model = QtWidgets.QComboBox()
-		self.gnn_demand_model.addItems(["uniform", "dirichlet"])
+		self.gnn_demand_model.addItems(["uniform", "dirichlet", "perturb"])
 		self.gnn_demand_model.setCurrentText("dirichlet")
 		self.gnn_demand_model.currentTextChanged.connect(self._gnn_refresh_dataset_status)
 		ds_form.addRow("Demand model:", self.gnn_demand_model)
@@ -1749,7 +1779,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.gnn_test_seed.valueChanged.connect(self._gnn_refresh_test_status)
 		test_form.addRow("Test seed:", self.gnn_test_seed)
 		self.gnn_test_demand_model = QtWidgets.QComboBox()
-		self.gnn_test_demand_model.addItems(["uniform", "dirichlet"])
+		self.gnn_test_demand_model.addItems(["uniform", "dirichlet", "perturb"])
 		self.gnn_test_demand_model.currentTextChanged.connect(self._gnn_refresh_test_status)
 		test_form.addRow("Demand model:", self.gnn_test_demand_model)
 		test_hash_row = QtWidgets.QHBoxLayout()
@@ -1819,8 +1849,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.gnn_progress_label.setText(task_name)
 		self.gnn_progress_bar.setRange(0, 0)  # busy / indeterminate
 		self.gnn_progress_bar.setFormat(f"{task_name}...")
+		self._gnn_last_log_time = time.monotonic()
+		self._gnn_watchdog_warned = False
+		self._gnn_watchdog_timer.start()
 
 	def _gnn_finish_progress(self, success: bool) -> None:
+		self._gnn_watchdog_timer.stop()
 		if self._gnn_active_task:
 			status = "done" if success else "failed/cancelled"
 			self.gnn_progress_label.setText(f"{self._gnn_active_task}: {status}")
@@ -1830,17 +1864,44 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.gnn_progress_bar.setValue(100 if success else 0)
 		self.gnn_progress_bar.setFormat("Done" if success else "Stopped")
 		self._gnn_active_task = ""
+		self._gnn_watchdog_warned = False
+
+	def _gnn_watchdog_tick(self) -> None:
+		"""Warn if a worker is running but no log/progress has appeared for a while."""
+		if self._gnn_worker is None or not self._gnn_worker.isRunning():
+			self._gnn_watchdog_warned = False
+			return
+		if self._gnn_active_task != "Training model":
+			return
+		inactive_for = time.monotonic() - self._gnn_last_log_time
+		if inactive_for < 120.0 or self._gnn_watchdog_warned:
+			return
+		mins = int(inactive_for // 60)
+		self._gnn_watchdog_warned = True
+		self.gnn_log.appendPlainText(
+			f"WARNING: no training log output for ~{mins} min. "
+			"Training may be very slow or stalled; use Stop to cancel safely."
+		)
+		self.gnn_progress_label.setText(f"{self._gnn_active_task}: no output for ~{mins} min")
 
 	def _gnn_on_worker_log(self, line: str) -> None:
 		self.gnn_log.appendPlainText(line)
+		self._gnn_last_log_time = time.monotonic()
+		self._gnn_watchdog_warned = False
 		# If worker logs include x/y information, switch to determinate mode.
 		m = re.search(r"(?:Progress:\s*|Epoch\s+)(\d+)\s*/\s*(\d+)", line)
 		if not m:
 			m = re.search(r"\b(\d+)\s*/\s*(\d+)\b", line)
-		if not m:
-			return
-		current = int(m.group(1))
-		total = int(m.group(2))
+		if m:
+			current = int(m.group(1))
+			total = int(m.group(2))
+		else:
+			# gnn_model prints: "Epoch 000, Train Loss: ..., Val Loss: ..."
+			epoch_only = re.search(r"\bEpoch\s+(\d+)\b", line)
+			if not epoch_only or self._gnn_active_task != "Training model":
+				return
+			current = int(epoch_only.group(1)) + 1
+			total = int(self.gnn_epochs.value())
 		if total <= 0:
 			return
 		if self.gnn_progress_bar.minimum() == 0 and self.gnn_progress_bar.maximum() == 0:
@@ -1947,6 +2008,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
 	def _gnn_refresh_model_status(self) -> None:
 		from old.gnn_cache import model_inputs, model_hash, find_model, find_dataset
+		if self._gnn_worker is not None and self._gnn_worker.isRunning():
+			self.gnn_train_btn.setEnabled(False)
+			return
 		wdn = self.wdn_input.currentText().strip()
 		if not self._gnn_dataset_hash:
 			self.gnn_mdl_hash_label.setText("—")
@@ -2925,6 +2989,10 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.measurement_list.setText(", ".join(nodes))
 		self._updating_measurement_text = False
 		self._measurement_text_changed(self.measurement_list.text())
+
+	def _apply_show_sensors_mode(self, enabled: bool) -> None:
+		if hasattr(self, "plot"):
+			self.plot.set_show_sensors_mode(bool(enabled))
 
 	def _set_measurement_input_validity(self, valid: bool) -> None:
 		if valid:

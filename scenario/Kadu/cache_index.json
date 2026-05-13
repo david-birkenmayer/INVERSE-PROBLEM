@@ -1,4 +1,11 @@
 {
+  "03652d1fdd73c24195f7d184c00f4491db4575ed929867c2fca695ef5f7d0149": "scenario/Kadu/dirichlet.json",
+  "08f46e16fd46b1ed3332c7021be8a86aba3a97b54f528ee24878d2ac36895005": "scenario/Kadu/b1.json",
+  "264e5baa1aa762b47c8ff776ec7ab81a66e28af30078d15a5bda8dee468940a4": "scenario/Kadu/d.json",
+  "48f0fb55407da10ce62cb7fe86c793e4192643286f98b679746297a0fc27295e": "scenario/Kadu/dirichlet2.json",
+  "6287f74daaeb7114dd01466ed8e325d121a143ad8db22ec4009e5e31625c734b": "scenario/Kadu/dirichlet.json",
+  "79ea60daa24d9387d358460a67ab61a9406162de7ed04b6cac6b8a28add530bf": "scenario/Kadu/b1.json",
+  "af2f0ff3a7455800816a6ef4ed508c6b2fe6dc7c0dc0b5a0af3af6b9834a4c92": "scenario/Kadu/d.json",
   "c505254775aa40ab82b7236450039f624b6b2df3371797f0f26ca11a7d9e60ec": "scenario/Kadu/Alperovits-base.json",
   "d2e7f840ee5bf0391aed3cac748bf3a1a5ba063b80769a25b491708f91f2cec8": "scenario/Kadu/base.json",
   "f3880c1bd478431734873efb8bf875298cef65be3fad22a69424b49ade2ddd59": "scenario/Kadu/base.json"

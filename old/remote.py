@@ -15,6 +15,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -95,7 +96,7 @@ def _write_notebook(nb: Dict[str, Any], out_path: Path) -> None:
 
 # Global process tracking for cancellation support
 _current_process: Optional[subprocess.Popen] = None
-_process_lock = __import__("threading").Lock()
+_process_lock = threading.Lock()
 
 
 def _set_current_process(proc: Optional[subprocess.Popen]) -> None:
@@ -110,7 +111,7 @@ def get_current_process() -> Optional[subprocess.Popen]:
         return _current_process
 
 
-def _execute_notebook(nb_path: Path, output_path: Path, timeout: int) -> subprocess.Popen:
+def _execute_notebook(nb_path: Path, output_path: Path, timeout: int, log_fn=None) -> subprocess.Popen:
     """Execute notebook and return the process object for potential termination."""
     cmd = [
         sys.executable,
@@ -124,26 +125,57 @@ def _execute_notebook(nb_path: Path, output_path: Path, timeout: int) -> subproc
         "-k",
         "python3",
         "--no-progress-bar",
+        "--log-output",
         "--execution-timeout",
         str(timeout),
     ]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
         _set_current_process(proc)
-        _, stderr_bytes = proc.communicate(timeout=timeout)
+
+        stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
+
+        def _read_stream(stream, sink: List[str]) -> None:
+            if stream is None:
+                return
+            for raw_line in stream:
+                line = raw_line.rstrip("\n")
+                sink.append(line)
+                if log_fn and line:
+                    log_fn(line)
+            stream.close()
+
+        out_thread = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_lines), daemon=True)
+        err_thread = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_lines), daemon=True)
+        out_thread.start()
+        err_thread.start()
+
+        proc.wait(timeout=timeout)
+        out_thread.join(timeout=5.0)
+        err_thread.join(timeout=5.0)
         _set_current_process(None)
+
         if proc.returncode < 0:
             # Killed by signal (e.g. SIGTERM from cancel) — caller handles cancellation
             return proc
         if proc.returncode != 0:
-            stderr_tail = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+            stderr_tail = "\n".join(stderr_lines).strip()
             lines = stderr_tail.splitlines()
             relevant = "\n".join(lines[-20:]) if lines else "(no stderr output)"
             raise RuntimeError(f"Notebook execution failed (exit {proc.returncode}):\n{relevant}")
         return proc
     except subprocess.TimeoutExpired:
-        _set_current_process(None)
         proc.kill()
+        out_thread.join(timeout=1.0)
+        err_thread.join(timeout=1.0)
+        _set_current_process(None)
         raise RuntimeError(f"Notebook execution exceeded {timeout}s timeout")
 
 
@@ -200,6 +232,7 @@ def run_dataset(
     replacements = {
         "WDN_NAME": repr(wdn_name),
         "EXTRA_DEMAND": repr(float(extra_demand)),
+        "DEMAND_MODEL": repr(str(demand_model)),
         "MEASUREMENT_NODES": repr(measurement_nodes),
         "INP_DIR": repr(inp_path),
         "BASE_DIR": repr(artifact_dir),
@@ -216,7 +249,7 @@ def run_dataset(
         log_fn(f"Running data_generator notebook → {artifact_dir}")
     
     try:
-        proc = _execute_notebook(nb_tmp, nb_out, timeout)
+        proc = _execute_notebook(nb_tmp, nb_out, timeout, log_fn=log_fn)
         if proc.returncode < 0:
             if log_fn:
                 log_fn("Dataset generation cancelled.")
@@ -264,6 +297,7 @@ def run_test_set(
     replacements = {
         "WDN_NAME": repr(wdn_name),
         "EXTRA_DEMAND": repr(float(extra_demand)),
+        "DEMAND_MODEL": repr(str(demand_model)),
         "MEASUREMENT_NODES": repr([]),
         "INP_DIR": repr(inp_path),
         "BASE_DIR": repr(artifact_dir),
@@ -280,7 +314,7 @@ def run_test_set(
         log_fn(f"Running shared test-set notebook → {artifact_dir}")
 
     try:
-        proc = _execute_notebook(nb_tmp, nb_out, timeout)
+        proc = _execute_notebook(nb_tmp, nb_out, timeout, log_fn=log_fn)
         if proc.returncode < 0:
             if log_fn:
                 log_fn("Test-set generation cancelled.")
@@ -337,6 +371,7 @@ def run_shared_eval_dataset(
     replacements = {
         "WDN_NAME": repr(wdn_name),
         "EXTRA_DEMAND": repr(float(extra_demand)),
+        "DEMAND_MODEL": repr(str(demand_model)),
         "MEASUREMENT_NODES": repr(measurement_nodes),
         "INP_DIR": repr(inp_path),
         "BASE_DIR": repr(artifact_dir),
@@ -353,7 +388,7 @@ def run_shared_eval_dataset(
         log_fn(f"Running shared-eval data_generator notebook → {artifact_dir}")
 
     try:
-        proc = _execute_notebook(nb_tmp, nb_out, timeout)
+        proc = _execute_notebook(nb_tmp, nb_out, timeout, log_fn=log_fn)
         if proc.returncode < 0:
             if log_fn:
                 log_fn("Shared-eval dataset generation cancelled.")
@@ -424,7 +459,7 @@ def run_model(
         log_fn(f"Running gnn_model notebook → {artifact_dir}")
     
     try:
-        proc = _execute_notebook(nb_tmp, nb_out, timeout)
+        proc = _execute_notebook(nb_tmp, nb_out, timeout, log_fn=log_fn)
         if proc.returncode < 0:
             if log_fn:
                 log_fn("Model training cancelled.")
