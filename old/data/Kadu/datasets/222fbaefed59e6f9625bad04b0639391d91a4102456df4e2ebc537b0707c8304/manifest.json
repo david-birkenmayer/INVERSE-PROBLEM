@@ -1,0 +1,20 @@
+{
+  "artifact_type": "dataset",
+  "created_at": "2026-05-13T09:33:36.153350+00:00",
+  "hash": "222fbaefed59e6f9625bad04b0639391d91a4102456df4e2ebc537b0707c8304",
+  "inputs": {
+    "code_version": "data_generator_shared_eval_v1",
+    "demand_model": "uniform",
+    "extra_demand": 0.3,
+    "measurement_nodes": [
+      "14",
+      "19",
+      "24",
+      "3"
+    ],
+    "node_label_threshold": 0.0,
+    "num_simulations": 100,
+    "seed": 9999,
+    "wdn": "Kadu"
+  }
+}
