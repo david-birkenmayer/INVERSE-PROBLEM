@@ -835,16 +835,26 @@ def compare_pressure(
         _log(f"Demand metrics B: {demand_metrics_b}")
 
     # ── Save results.json ──────────────────────────────────────────────────
+    def _portable_path(path_str: str) -> str:
+        """Prefer project-relative paths so artifacts can be moved across devices."""
+        try:
+            p = Path(path_str)
+            if not p.is_absolute():
+                return str(p)
+            return str(p.relative_to(ROOT_DIR))
+        except Exception:
+            return path_str
+
     results = {
         "wdn_name": wdn_name,
         "label_a": label_a,
         "label_b": label_b,
         "model_a_hash": model_a_hash,
         "model_b_hash": model_b_hash,
-        "model_a_dir": model_dir_a,
-        "model_b_dir": model_dir_b,
-        "dataset_a_dir": dataset_dir_a,
-        "dataset_b_dir": dataset_dir_b,
+        "model_a_dir": _portable_path(model_dir_a),
+        "model_b_dir": _portable_path(model_dir_b),
+        "dataset_a_dir": _portable_path(dataset_dir_a),
+        "dataset_b_dir": _portable_path(dataset_dir_b),
         "num_test_samples_a": len(test_data_a),
         "num_test_samples_b": len(test_data_b),
         "evaluation_mode": eval_mode,
@@ -855,11 +865,11 @@ def compare_pressure(
         "demand_metrics_a": demand_metrics_a,
         "demand_metrics_b": demand_metrics_b,
         "plots": {
-            "scatter_a": scatter_a_path,
-            "scatter_b": scatter_b_path,
-            "scatter_overlay": overlay_path,
-            "aed_a": aed_a_path,
-            "aed_b": aed_b_path,
+            "scatter_a": _portable_path(scatter_a_path),
+            "scatter_b": _portable_path(scatter_b_path),
+            "scatter_overlay": _portable_path(overlay_path) if overlay_path else None,
+            "aed_a": _portable_path(aed_a_path) if aed_a_path else None,
+            "aed_b": _portable_path(aed_b_path) if aed_b_path else None,
         },
     }
     results_path = output_path / "results.json"

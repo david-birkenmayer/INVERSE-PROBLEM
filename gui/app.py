@@ -1691,6 +1691,14 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.gnn_stop_btn.setEnabled(False)
 		self.gnn_stop_btn.clicked.connect(self._gnn_stop_worker)
 		ctrl_layout.addWidget(self.gnn_stop_btn)
+		self.gnn_progress_label = QtWidgets.QLabel("Idle")
+		ctrl_layout.addWidget(self.gnn_progress_label)
+		self.gnn_progress_bar = QtWidgets.QProgressBar()
+		self.gnn_progress_bar.setMinimumWidth(260)
+		self.gnn_progress_bar.setRange(0, 100)
+		self.gnn_progress_bar.setValue(0)
+		self.gnn_progress_bar.setFormat("Idle")
+		ctrl_layout.addWidget(self.gnn_progress_bar, 1)
 		ctrl_layout.addStretch()
 		run_layout.addWidget(ctrl_group)
 
@@ -1803,7 +1811,45 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._gnn_dataset_dir: str = ""
 		self._gnn_worker: "GNNDatasetWorker | GNNModelWorker | GNNCompareWorker | None" = None
 		self._gnn_results: dict = {}
+		self._gnn_active_task: str = ""
 		self._gnn_refresh_dataset_status()
+
+	def _gnn_start_progress(self, task_name: str) -> None:
+		self._gnn_active_task = task_name
+		self.gnn_progress_label.setText(task_name)
+		self.gnn_progress_bar.setRange(0, 0)  # busy / indeterminate
+		self.gnn_progress_bar.setFormat(f"{task_name}...")
+
+	def _gnn_finish_progress(self, success: bool) -> None:
+		if self._gnn_active_task:
+			status = "done" if success else "failed/cancelled"
+			self.gnn_progress_label.setText(f"{self._gnn_active_task}: {status}")
+		else:
+			self.gnn_progress_label.setText("Idle")
+		self.gnn_progress_bar.setRange(0, 100)
+		self.gnn_progress_bar.setValue(100 if success else 0)
+		self.gnn_progress_bar.setFormat("Done" if success else "Stopped")
+		self._gnn_active_task = ""
+
+	def _gnn_on_worker_log(self, line: str) -> None:
+		self.gnn_log.appendPlainText(line)
+		# If worker logs include x/y information, switch to determinate mode.
+		m = re.search(r"(?:Progress:\s*|Epoch\s+)(\d+)\s*/\s*(\d+)", line)
+		if not m:
+			m = re.search(r"\b(\d+)\s*/\s*(\d+)\b", line)
+		if not m:
+			return
+		current = int(m.group(1))
+		total = int(m.group(2))
+		if total <= 0:
+			return
+		if self.gnn_progress_bar.minimum() == 0 and self.gnn_progress_bar.maximum() == 0:
+			self.gnn_progress_bar.setRange(0, total)
+		elif self.gnn_progress_bar.maximum() != total:
+			self.gnn_progress_bar.setRange(0, total)
+		self.gnn_progress_bar.setValue(max(0, min(current, total)))
+		task = self._gnn_active_task or "Running"
+		self.gnn_progress_bar.setFormat(f"{task}: {current}/{total}")
 
 	def _gnn_default_nodes(self) -> List[str]:
 		wdn = self.wdn_input.currentText().strip()
@@ -1945,6 +1991,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			return
 		wdn = self.wdn_input.currentText().strip()
 		self.gnn_log.appendPlainText(f"Starting shared test-set generation for {wdn}...")
+		self._gnn_start_progress("Generating shared test set")
 		self.gnn_generate_test_btn.setEnabled(False)
 		self.gnn_stop_btn.setEnabled(True)
 		worker = GNNTestSetWorker(
@@ -1955,13 +2002,14 @@ class MainWindow(QtWidgets.QMainWindow):
 			seed=self.gnn_test_seed.value(),
 			parent=self,
 		)
-		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.log_line.connect(self._gnn_on_worker_log)
 		worker.finished.connect(self._gnn_on_test_set_done)
 		self._gnn_worker = worker
 		worker.start()
 
 	def _gnn_on_test_set_done(self, success: bool, artifact_dir: str) -> None:
 		self.gnn_stop_btn.setEnabled(False)
+		self._gnn_finish_progress(success)
 		if success:
 			self.gnn_log.appendPlainText(f"Shared test set ready: {artifact_dir}")
 		else:
@@ -1973,6 +2021,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			return
 		wdn = self.wdn_input.currentText().strip()
 		self.gnn_log.appendPlainText(f"Starting dataset generation for {wdn}...")
+		self._gnn_start_progress("Generating dataset")
 		self.gnn_generate_btn.setEnabled(False)
 		self.gnn_stop_btn.setEnabled(True)
 		worker = GNNDatasetWorker(
@@ -1984,13 +2033,14 @@ class MainWindow(QtWidgets.QMainWindow):
 			node_label_threshold=0.0,
 			parent=self,
 		)
-		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.log_line.connect(self._gnn_on_worker_log)
 		worker.finished.connect(self._gnn_on_dataset_done)
 		self._gnn_worker = worker
 		worker.start()
 
 	def _gnn_on_dataset_done(self, success: bool, artifact_dir: str) -> None:
 		self.gnn_stop_btn.setEnabled(False)
+		self._gnn_finish_progress(success)
 		if success:
 			self.gnn_log.appendPlainText(f"Dataset ready: {artifact_dir}")
 			self._gnn_dataset_dir = artifact_dir
@@ -2009,6 +2059,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.gnn_log.appendPlainText("Dataset not found — generate it first.")
 			return
 		self.gnn_log.appendPlainText(f"Starting model training for {wdn}...")
+		self._gnn_start_progress("Training model")
 		self.gnn_train_btn.setEnabled(False)
 		self.gnn_stop_btn.setEnabled(True)
 		worker = GNNModelWorker(
@@ -2023,13 +2074,14 @@ class MainWindow(QtWidgets.QMainWindow):
 			seed=self.gnn_seed.value(),
 			parent=self,
 		)
-		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.log_line.connect(self._gnn_on_worker_log)
 		worker.finished.connect(self._gnn_on_model_done)
 		self._gnn_worker = worker
 		worker.start()
 
 	def _gnn_on_model_done(self, success: bool, artifact_dir: str) -> None:
 		self.gnn_stop_btn.setEnabled(False)
+		self._gnn_finish_progress(success)
 		if success:
 			self.gnn_log.appendPlainText(f"Model ready: {artifact_dir}")
 		else:
@@ -2075,6 +2127,8 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.gnn_log.appendPlainText("Requesting cancellation...")
 			self._gnn_worker.cancel()
 			self.gnn_stop_btn.setEnabled(False)
+			self.gnn_progress_label.setText("Cancelling...")
+			self.gnn_progress_bar.setFormat("Cancelling...")
 
 	def _gnn_run_comparison(self) -> None:
 		if self._gnn_worker is not None and self._gnn_worker.isRunning():
@@ -2134,6 +2188,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.gnn_log.appendPlainText(f"Using shared test set: {test_set_hash_value[:8]}")
 
 		self.gnn_log.appendPlainText(f"Starting comparison: {model_a_hash[:8]} vs {model_b_hash[:8]}")
+		self._gnn_start_progress("Running comparison")
 		self.gnn_run_comparison_btn.setEnabled(False)
 		self.gnn_stop_btn.setEnabled(True)
 
@@ -2149,13 +2204,14 @@ class MainWindow(QtWidgets.QMainWindow):
 			demand_reconstruction=self.gnn_reconstruction.currentText(),
 			parent=self,
 		)
-		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.log_line.connect(self._gnn_on_worker_log)
 		worker.finished.connect(self._gnn_on_comparison_done)
 		self._gnn_worker = worker
 		worker.start()
 
 	def _gnn_on_comparison_done(self, success: bool, artifact_dir: str) -> None:
 		self.gnn_stop_btn.setEnabled(False)
+		self._gnn_finish_progress(success)
 		if success:
 			self.gnn_log.appendPlainText(f"Comparison complete: {artifact_dir}")
 			self._gnn_load_results(artifact_dir)
@@ -2249,11 +2305,31 @@ class MainWindow(QtWidgets.QMainWindow):
 			QtWidgets.QMessageBox.warning(self, "Missing Context", "Comparison metadata is incomplete. Run a fresh comparison first.")
 			return
 
+		def _resolve_saved_dir(path_value: str) -> str:
+			"""Resolve saved artifact paths from results.json across machines."""
+			p = str(path_value or "").strip()
+			if not p:
+				return ""
+			if os.path.isdir(p):
+				return p
+			if not os.path.isabs(p):
+				candidate = os.path.join(ROOT_DIR, p)
+				if os.path.isdir(candidate):
+					return candidate
+			# Backward compatibility: old results stored absolute paths from another machine.
+			marker = f"{os.sep}old{os.sep}data{os.sep}"
+			if marker in p:
+				suffix = p.split(marker, 1)[1]
+				candidate = os.path.join(ROOT_DIR, "old", "data", suffix)
+				if os.path.isdir(candidate):
+					return candidate
+			return ""
+
 		def _dataset_dir(model_hash: str, fallback_key: str) -> str:
-			dir_path = str(self._gnn_results.get(fallback_key) or "")
+			dir_path = _resolve_saved_dir(str(self._gnn_results.get(fallback_key) or ""))
 			if dir_path:
 				return dir_path
-			model_dir = str(self._gnn_results.get(fallback_key.replace("dataset", "model")) or "")
+			model_dir = _resolve_saved_dir(str(self._gnn_results.get(fallback_key.replace("dataset", "model")) or ""))
 			if not model_dir and model_hash:
 				model_dir = find_model(wdn, model_hash) or ""
 			if not model_dir:
@@ -2271,8 +2347,8 @@ class MainWindow(QtWidgets.QMainWindow):
 				return ""
 			return ""
 
-		model_a_dir = str(self._gnn_results.get("model_a_dir") or find_model(wdn, model_a_hash) or "")
-		model_b_dir = str(self._gnn_results.get("model_b_dir") or find_model(wdn, model_b_hash) or "")
+		model_a_dir = _resolve_saved_dir(str(self._gnn_results.get("model_a_dir") or "")) or str(find_model(wdn, model_a_hash) or "")
+		model_b_dir = _resolve_saved_dir(str(self._gnn_results.get("model_b_dir") or "")) or str(find_model(wdn, model_b_hash) or "")
 		dataset_a_dir = _dataset_dir(model_a_hash, "dataset_a_dir")
 		dataset_b_dir = _dataset_dir(model_b_hash, "dataset_b_dir")
 		if not model_a_dir or not model_b_dir or not dataset_a_dir or not dataset_b_dir:
