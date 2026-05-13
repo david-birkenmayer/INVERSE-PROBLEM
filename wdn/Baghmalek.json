@@ -1,0 +1,9 @@
+{
+    "wdn_name": "Baghmalek",
+    "extra_demand": 0.22,
+    "num_simulations": 5000,
+    "node_scale" : 0.8,
+    "node_label_threshold": 0.05,
+    "non_special_node_scale": 0.7,
+    "measurement_nodes" : ["3","14","24","42","48","57","70"]
+}

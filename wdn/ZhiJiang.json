@@ -1,0 +1,11 @@
+{
+    "wdn_name": "ZhiJiang",
+    "extra_demand": 1.2,
+    "num_simulations": 5000,
+    "scale" : 1.0,
+    "node_scale" : 0.06,
+    "font_scale" : 0.65,
+    "node_label_threshold": 0.1,
+    "non_special_node_scale": 0.7,
+    "measurement_nodes" : ["110", "16"]
+}

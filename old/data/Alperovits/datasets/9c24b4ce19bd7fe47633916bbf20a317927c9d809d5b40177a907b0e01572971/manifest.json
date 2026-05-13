@@ -1,0 +1,17 @@
+{
+  "artifact_type": "dataset",
+  "created_at": "2026-05-12T15:44:40.973927+00:00",
+  "hash": "9c24b4ce19bd7fe47633916bbf20a317927c9d809d5b40177a907b0e01572971",
+  "inputs": {
+    "code_version": "data_generator_shared_eval_v1",
+    "demand_model": "dirichlet",
+    "extra_demand": 1.2,
+    "measurement_nodes": [
+      "1"
+    ],
+    "node_label_threshold": 0.0,
+    "num_simulations": 40,
+    "seed": 9999,
+    "wdn": "Alperovits"
+  }
+}

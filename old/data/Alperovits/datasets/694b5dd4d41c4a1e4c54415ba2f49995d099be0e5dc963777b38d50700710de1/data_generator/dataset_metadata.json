@@ -1,0 +1,17 @@
+{
+    "wdn_name": "Alperovits",
+    "num_simulations": 5000,
+    "num_nodes": 8,
+    "feature_vector_length": 3,
+    "num_edges": 15,
+    "train_size": 3200,
+    "val_size": 800,
+    "test_size": 1000,
+    "seed": 42,
+    "split_test_size": 0.2,
+    "split_val_size": 0.2,
+    "train_dataset_path": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/694b5dd4d41c4a1e4c54415ba2f49995d099be0e5dc963777b38d50700710de1/data_generator/train_dataset.pt",
+    "val_dataset_path": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/694b5dd4d41c4a1e4c54415ba2f49995d099be0e5dc963777b38d50700710de1/data_generator/val_dataset.pt",
+    "test_dataset_path": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/694b5dd4d41c4a1e4c54415ba2f49995d099be0e5dc963777b38d50700710de1/data_generator/test_dataset.pt",
+    "stats_path": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/694b5dd4d41c4a1e4c54415ba2f49995d099be0e5dc963777b38d50700710de1/data_generator/dataset_stats.json"
+}

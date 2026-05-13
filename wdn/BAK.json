@@ -1,0 +1,9 @@
+{
+    "wdn_name": "BAK",
+    "extra_demand": 1.2,
+    "num_simulations": 5000,
+    "node_scale" : 1.5,
+    "font_scale" : 1.0,
+    "measurement_nodes" : ["1", "8", "26", "32"],
+    "node_label_threshold": 0.0
+}

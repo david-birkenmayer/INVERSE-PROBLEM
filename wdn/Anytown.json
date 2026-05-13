@@ -1,0 +1,7 @@
+{
+    "wdn_name": "Anytown",
+    "extra_demand": 0.5,
+    "num_simulations": 5000,
+    "measurement_nodes" : ["20", "140"],
+    "node_label_threshold": 0.0
+}

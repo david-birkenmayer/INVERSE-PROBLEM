@@ -1,0 +1,15 @@
+{
+  "artifact_type": "model",
+  "created_at": "2026-05-06T09:43:41.315037+00:00",
+  "hash": "ff570e205c5d48f9d744145a2c611a67f0bf77ce1e7bd0592d506e8c7a462439",
+  "inputs": {
+    "batch_size": 32,
+    "code_version": "gnn_model_v1",
+    "dataset_hash": "b4aba5c24f9d67f84b86422ae72817d61df1efafa4b7e5a127cdc197d8f5c6da",
+    "epochs": 50,
+    "hidden_dim": 64,
+    "lr": 0.001,
+    "num_layers": 3,
+    "seed": 42
+  }
+}

@@ -1,0 +1,11 @@
+{
+    "wdn_name": "Modena",
+    "extra_demand": 0.4,
+    "num_simulations": 5000,
+    "node_scale" : 0.6,
+    "font_scale" : 0.9,
+    "node_label_threshold": 0.125,
+    "non_special_node_scale": 0.45,
+    "epochs": 50,
+    "measurement_nodes" : ["52", "244", "89", "94", "79", "150", "55", "28"]
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_type": "test_set",
+  "created_at": "2026-05-12T15:43:40.277796+00:00",
+  "hash": "7cc215f1c7d8df963e5d845a3e77d0157ef7ec0b55423dad36fcfca3de1f739f",
+  "inputs": {
+    "code_version": "data_generator_v1",
+    "demand_model": "dirichlet",
+    "extra_demand": 1.2,
+    "num_simulations": 40,
+    "seed": 9999,
+    "wdn": "Alperovits"
+  }
+}

@@ -107,6 +107,9 @@
   "inp_path": "./wdn/Kadu.inp",
   "pipe_bounds_enabled": true,
   "pipe_bounds_params": {
+    "DIRICHLET_EXTRA_DEMAND": 1.0,
+    "DIRICHLET_SAMPLES": 200,
+    "DIRICHLET_SEED": 1,
     "PIPE_BOUND_METHOD": "perturb",
     "PIPE_BOUND_PERTURB_BASE": "base",
     "PIPE_BOUND_PERTURB_FIX_TOTAL": true,
@@ -177,7 +180,7 @@
     "8": 0.006085003260523081,
     "9": 0.0006791951600462198
   },
-  "scenario_hash": "f3880c1bd478431734873efb8bf875298cef65be3fad22a69424b49ade2ddd59",
+  "scenario_hash": "d2e7f840ee5bf0391aed3cac748bf3a1a5ba063b80769a25b491708f91f2cec8",
   "scenario_heads": {
     "10": 98.68077850341797,
     "11": 98.58853912353516,
@@ -207,7 +210,7 @@
   },
   "scenario_name": "base",
   "scenario_source": "base",
-  "timestamp": "20260417-152530",
+  "timestamp": "20260513-102710",
   "wdn": "Kadu",
   "wdn_name": "Kadu"
 }

@@ -1,0 +1,16 @@
+{
+  "artifact_type": "dataset",
+  "created_at": "2026-05-06T07:59:07.668138+00:00",
+  "hash": "438c36873b0a3794181daa28e4f860ba2faa57c17181e9d7fc1f264bc82cb1ec",
+  "inputs": {
+    "code_version": "data_generator_v1",
+    "demand_model": "uniform",
+    "extra_demand": 1.2,
+    "measurement_nodes": [
+      "1"
+    ],
+    "node_label_threshold": 0.0,
+    "num_simulations": 5000,
+    "wdn": "Alperovits"
+  }
+}

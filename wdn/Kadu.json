@@ -1,0 +1,9 @@
+{
+    "wdn_name": "Kadu",
+    "extra_demand": 0.3,
+    "num_simulations": 5000,
+    "node_scale" : 1.3,
+    "label_scale" : 1.2,
+    "measurement_nodes" : ["3", "19", "24", "14"],
+    "node_label_threshold": 0.0
+}

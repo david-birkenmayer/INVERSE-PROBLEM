@@ -11,6 +11,8 @@ from step2_estimation import (
 	simulate_base_scenario,
 	simulate_single_random_scenario,
 	simulate_perturbed_demand_scenarios,
+	simulate_dirichlet_demand_scenarios,
+	simulate_single_dirichlet_scenario,
 )
 
 
@@ -23,7 +25,10 @@ SCENARIO_SOURCE = "base"  # "base" or "random"
 ### PIPE BOUNDS
 PIPE_BOUNDS = True
 PIPE_BOUND_SAFENESS = 0.85  # in [0, 1], higher means looser bounds
-PIPE_BOUND_METHOD = "perturb"  # "montecarlo" or "perturb"
+PIPE_BOUND_METHOD = "perturb"  # "montecarlo", "perturb", or "dirichlet"
+DIRICHLET_EXTRA_DEMAND = 1.0  # total extra demand (L/s) added via Dirichlet; also used for SCENARIO_SOURCE="dirichlet"
+DIRICHLET_SAMPLES = 200
+DIRICHLET_SEED = 1
 PIPE_BOUND_POLICY = "minmax"  # "minmax" or "quantile"
 PIPE_BOUND_PERTURB_SAMPLES = 25
 PIPE_BOUND_PERTURB_SIGMA = 0.10
@@ -113,6 +118,9 @@ def _apply_config(config: Dict[str, object]) -> None:
 		"PIPE_BOUND_PERTURB_SEED",
 		"PIPE_BOUND_PERTURB_FIX_TOTAL",
 		"PIPE_BOUND_PERTURB_BASE",
+		"DIRICHLET_EXTRA_DEMAND",
+		"DIRICHLET_SAMPLES",
+		"DIRICHLET_SEED",
 	}
 	for key in keys:
 		if key in config:
@@ -174,6 +182,14 @@ def main() -> None:
 				seed=PIPE_BOUND_PERTURB_SEED,
 				simulator="auto",
 			)
+		elif PIPE_BOUND_METHOD == "dirichlet":
+			flows_by_pipe = simulate_dirichlet_demand_scenarios(
+				inp_path=inp_path,
+				n_scenarios=DIRICHLET_SAMPLES,
+				extra_demand=DIRICHLET_EXTRA_DEMAND,
+				seed=DIRICHLET_SEED,
+				simulator="auto",
+			)
 		else:
 			flows_by_pipe = simulate_random_demand_scenarios(
 				inp_path=inp_path,
@@ -201,8 +217,15 @@ def main() -> None:
 			seed=2,
 			simulator="auto",
 		)
+	elif SCENARIO_SOURCE == "dirichlet":
+		scenario_demands_pos, scenario_heads, scenario_flows = simulate_single_dirichlet_scenario(
+			inp_path=inp_path,
+			extra_demand=DIRICHLET_EXTRA_DEMAND,
+			seed=2,
+			simulator="auto",
+		)
 	else:
-		raise ValueError("SCENARIO_SOURCE must be 'base' or 'random'.")
+		raise ValueError("SCENARIO_SOURCE must be 'base', 'random', or 'dirichlet'.")
 
 	scenario_demands = {k: v for k, v in scenario_demands_pos.items()}
 
@@ -230,6 +253,9 @@ def main() -> None:
 			"PIPE_BOUND_PERTURB_SEED": PIPE_BOUND_PERTURB_SEED,
 			"PIPE_BOUND_PERTURB_FIX_TOTAL": PIPE_BOUND_PERTURB_FIX_TOTAL,
 			"PIPE_BOUND_PERTURB_BASE": PIPE_BOUND_PERTURB_BASE,
+			"DIRICHLET_EXTRA_DEMAND": DIRICHLET_EXTRA_DEMAND,
+			"DIRICHLET_SAMPLES": DIRICHLET_SAMPLES,
+			"DIRICHLET_SEED": DIRICHLET_SEED,
 		},
 		"timestamp": timestamp,
 		"scenario_demands": scenario_demands,

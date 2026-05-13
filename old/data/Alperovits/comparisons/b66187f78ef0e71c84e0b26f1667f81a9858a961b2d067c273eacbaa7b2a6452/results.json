@@ -1,0 +1,69 @@
+{
+  "wdn_name": "Alperovits",
+  "label_a": "Model A (a104fa5f)",
+  "label_b": "Model B (ad443c24)",
+  "model_a_hash": "a104fa5f9692801541f58f8a7f968e616a1a338d370e405c9ff26b92ec6d739e",
+  "model_b_hash": "ad443c242debdedfc98621929db07566df6729c79c9626e95a6a1f19a2d07d78",
+  "model_a_dir": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/models/a104fa5f9692801541f58f8a7f968e616a1a338d370e405c9ff26b92ec6d739e",
+  "model_b_dir": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/models/ad443c242debdedfc98621929db07566df6729c79c9626e95a6a1f19a2d07d78",
+  "dataset_a_dir": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/6cf13b526034914487dab37b6d5b58074e0141bd3a2123f202072d8e96c2c7b4",
+  "dataset_b_dir": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/datasets/5679b1a3ec7f31b81cee4bb1eb3f6dd865ccb4d093286b4602c044ef9810d567",
+  "num_test_samples_a": 1000,
+  "num_test_samples_b": 1000,
+  "evaluation_mode": "strict_shared",
+  "num_eval_samples": 1000,
+  "num_strict_pairs": 1000,
+  "metrics_a": {
+    "mse": 9.68777749221772e-05,
+    "mae": 0.007790823467075825,
+    "rmse": 0.009842650807692874,
+    "nmae": 0.006899601240187409,
+    "mape": 1.2199029326438904,
+    "max_pe": 35.352152585983276,
+    "accuracy_10pct": 100.0,
+    "accuracy_5pct": 100.0,
+    "r2": 0.9990963339805603,
+    "num_valid_samples": 5000,
+    "value_range": {
+      "min": 0.10237985104322433,
+      "max": 1.2315489053726196,
+      "mean": 0.7816372513771057
+    }
+  },
+  "metrics_b": {
+    "mse": 2.6764104404719546e-05,
+    "mae": 0.003741103457286954,
+    "rmse": 0.005173403560976037,
+    "nmae": 0.0033131442603787664,
+    "mape": 0.9022535756230354,
+    "max_pe": 39.263737201690674,
+    "accuracy_10pct": 100.0,
+    "accuracy_5pct": 100.0,
+    "r2": 0.999696671962738,
+    "num_valid_samples": 5000,
+    "value_range": {
+      "min": 0.10237985104322433,
+      "max": 1.2315489053726196,
+      "mean": 0.6746549606323242
+    }
+  },
+  "demand_metrics_a": {
+    "mae": 0.40708304408644874,
+    "rmse": 0.5062399662395285,
+    "r2": -12.66739612282978,
+    "mape": 158.9905275550484
+  },
+  "demand_metrics_b": {
+    "mae": 0.20536134830506478,
+    "rmse": 0.27339055185812083,
+    "r2": -2.986024172208793,
+    "mape": 85.29085590315742
+  },
+  "plots": {
+    "scatter_a": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/comparisons/b66187f78ef0e71c84e0b26f1667f81a9858a961b2d067c273eacbaa7b2a6452/r2_scatter_a.png",
+    "scatter_b": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/comparisons/b66187f78ef0e71c84e0b26f1667f81a9858a961b2d067c273eacbaa7b2a6452/r2_scatter_b.png",
+    "scatter_overlay": "/home/birkenma/Dokumente/INVERSE-PROBLEM/old/data/Alperovits/comparisons/b66187f78ef0e71c84e0b26f1667f81a9858a961b2d067c273eacbaa7b2a6452/r2_scatter_overlay.png",
+    "aed_a": null,
+    "aed_b": null
+  }
+}

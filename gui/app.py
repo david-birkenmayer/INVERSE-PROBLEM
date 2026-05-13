@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,71 @@ def _scenario_index_path(wdn: str) -> str:
 
 def _data_index_path(wdn: str) -> str:
 	return os.path.join("data", wdn, "cache_index.json")
+
+
+def _write_gui_hash(output_dir: str, solver_hash: str) -> None:
+	"""Write the GUI hash into the result directory so the index can be rebuilt later."""
+	try:
+		hash_file = os.path.join(output_dir, "_gui_hash.txt")
+		if not os.path.isfile(hash_file):
+			with open(hash_file, "w", encoding="utf-8") as f:
+				f.write(solver_hash)
+	except OSError:
+		pass
+
+
+def _sync_wdn_index(wdn: str) -> Dict[str, str]:
+	"""Scan data/<wdn>/ for _gui_hash.txt files, backfill missing ones, and rebuild the index.
+
+	Returns the (possibly updated) index dict.
+	"""
+	index_path = _data_index_path(wdn)
+	index = load_index(index_path, ROOT_DIR)
+
+	data_dir = os.path.join(ROOT_DIR, "data", wdn)
+	if not os.path.isdir(data_dir):
+		return index
+
+	changed = False
+
+	# Backfill: write _gui_hash.txt for entries already in the index
+	for hash_key, rel_path in list(index.items()):
+		resolved = rel_path if os.path.isabs(rel_path) else os.path.join(ROOT_DIR, rel_path)
+		if os.path.isdir(resolved):
+			hash_file = os.path.join(resolved, "_gui_hash.txt")
+			if not os.path.isfile(hash_file):
+				try:
+					with open(hash_file, "w", encoding="utf-8") as f:
+						f.write(hash_key)
+				except OSError:
+					pass
+
+	# Forward-fill: scan subdirs for _gui_hash.txt and add to index if missing
+	try:
+		entries = list(os.scandir(data_dir))
+	except OSError:
+		entries = []
+	for entry in entries:
+		if not entry.is_dir():
+			continue
+		hash_file = os.path.join(entry.path, "_gui_hash.txt")
+		if not os.path.isfile(hash_file):
+			continue
+		try:
+			hash_key = open(hash_file, encoding="utf-8").read().strip()
+		except OSError:
+			continue
+		if not hash_key:
+			continue
+		expected_rel = os.path.join("data", wdn, entry.name)
+		if index.get(hash_key) != expected_rel:
+			index[hash_key] = expected_rel
+			changed = True
+
+	if changed:
+		save_index(index_path, index, ROOT_DIR)
+
+	return index
 
 
 def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, name_prefix: str = "") -> "tuple[str, str, float, int] | None":
@@ -309,8 +375,8 @@ class LocalSearchWorker(QtCore.QThread):
 			return None
 		self._index[solver_hash] = output_dir
 		save_index(self._index_path, self._index, ROOT_DIR)
+		_write_gui_hash(resolvedout, solver_hash)
 		return self._read_radius(resolvedout, nodes, cached=False)
-
 	def _read_radius(self, output_dir: str, nodes: List[str], *, cached: bool) -> "float | None":
 		dd_path = os.path.join(output_dir, "demand_distance.json")
 		if not os.path.isfile(dd_path):
@@ -905,6 +971,262 @@ class ResultsTableDialog(QtWidgets.QDialog):
 		self._populate()
 
 
+# ---------------------------------------------------------------------------
+# GNN worker threads
+# ---------------------------------------------------------------------------
+
+class GNNDatasetWorker(QtCore.QThread):
+	"""Runs remote.run_dataset() off the GUI thread with cancellation support."""
+
+	log_line = QtCore.pyqtSignal(str)
+	finished = QtCore.pyqtSignal(bool, str)  # success, artifact_dir
+
+	def __init__(
+		self,
+		wdn_name: str,
+		measurement_nodes: List[str],
+		extra_demand: float,
+		num_simulations: int,
+		demand_model: str,
+		node_label_threshold: float,
+		timeout: int = 36000,
+		parent: "QtWidgets.QWidget | None" = None,
+	) -> None:
+		super().__init__(parent)
+		self._kwargs = dict(
+			wdn_name=wdn_name,
+			measurement_nodes=measurement_nodes,
+			extra_demand=extra_demand,
+			num_simulations=num_simulations,
+			demand_model=demand_model,
+			node_label_threshold=node_label_threshold,
+			timeout=timeout,
+			log_fn=self._emit_log,
+		)
+		self._artifact_dir: str = ""
+
+	def _emit_log(self, line: str) -> None:
+		self.log_line.emit(line)
+
+	def cancel(self) -> None:
+		"""Request cancellation of the running notebook."""
+		from old.remote import get_current_process
+		proc = get_current_process()
+		if proc and proc.poll() is None:
+			self._emit_log("Stopping dataset generation...")
+			proc.terminate()
+
+	def run(self) -> None:
+		try:
+			from old.remote import run_dataset
+			import shutil
+			artifact_dir, was_cancelled = run_dataset(**self._kwargs)
+			self._artifact_dir = artifact_dir
+			if was_cancelled:
+				shutil.rmtree(artifact_dir, ignore_errors=True)
+				self._emit_log("Dataset generation was cancelled. Artifacts deleted.")
+				self.finished.emit(False, "")
+			else:
+				self.finished.emit(True, artifact_dir)
+		except Exception as exc:
+			self._emit_log(f"ERROR: {exc}")
+			if self._artifact_dir:
+				import shutil
+				shutil.rmtree(self._artifact_dir, ignore_errors=True)
+			self.finished.emit(False, "")
+
+
+class GNNTestSetWorker(QtCore.QThread):
+	"""Runs remote.run_test_set() off the GUI thread with cancellation support."""
+
+	log_line = QtCore.pyqtSignal(str)
+	finished = QtCore.pyqtSignal(bool, str)  # success, artifact_dir
+
+	def __init__(
+		self,
+		wdn_name: str,
+		extra_demand: float,
+		num_simulations: int,
+		demand_model: str,
+		seed: int,
+		timeout: int = 36000,
+		parent: "QtWidgets.QWidget | None" = None,
+	) -> None:
+		super().__init__(parent)
+		self._kwargs = dict(
+			wdn_name=wdn_name,
+			extra_demand=extra_demand,
+			num_simulations=num_simulations,
+			demand_model=demand_model,
+			seed=seed,
+			timeout=timeout,
+			log_fn=self._emit_log,
+		)
+		self._artifact_dir: str = ""
+
+	def _emit_log(self, line: str) -> None:
+		self.log_line.emit(line)
+
+	def cancel(self) -> None:
+		"""Request cancellation of the running notebook."""
+		from old.remote import get_current_process
+		proc = get_current_process()
+		if proc and proc.poll() is None:
+			self._emit_log("Stopping shared test-set generation...")
+			proc.terminate()
+
+	def run(self) -> None:
+		try:
+			from old.remote import run_test_set
+			import shutil
+			artifact_dir, was_cancelled = run_test_set(**self._kwargs)
+			self._artifact_dir = artifact_dir
+			if was_cancelled:
+				shutil.rmtree(artifact_dir, ignore_errors=True)
+				self._emit_log("Shared test-set generation was cancelled. Artifacts deleted.")
+				self.finished.emit(False, "")
+			else:
+				self.finished.emit(True, artifact_dir)
+		except Exception as exc:
+			self._emit_log(f"ERROR: {exc}")
+			if self._artifact_dir:
+				import shutil
+				shutil.rmtree(self._artifact_dir, ignore_errors=True)
+			self.finished.emit(False, "")
+
+
+class GNNModelWorker(QtCore.QThread):
+	"""Runs remote.run_model() off the GUI thread with cancellation support."""
+
+	log_line = QtCore.pyqtSignal(str)
+	finished = QtCore.pyqtSignal(bool, str)  # success, artifact_dir
+
+	def __init__(
+		self,
+		wdn_name: str,
+		d_hash: str,
+		dataset_dir: str,
+		epochs: int,
+		lr: float,
+		batch_size: int,
+		hidden_dim: int,
+		num_layers: int,
+		seed: int,
+		timeout: int = 36000,
+		parent: "QtWidgets.QWidget | None" = None,
+	) -> None:
+		super().__init__(parent)
+		self._kwargs = dict(
+			wdn_name=wdn_name,
+			d_hash=d_hash,
+			dataset_dir=dataset_dir,
+			epochs=epochs,
+			lr=lr,
+			batch_size=batch_size,
+			hidden_dim=hidden_dim,
+			num_layers=num_layers,
+			seed=seed,
+			timeout=timeout,
+			log_fn=self._emit_log,
+		)
+		self._artifact_dir: str = ""
+
+	def _emit_log(self, line: str) -> None:
+		self.log_line.emit(line)
+
+	def cancel(self) -> None:
+		"""Request cancellation of the running notebook."""
+		from old.remote import get_current_process
+		proc = get_current_process()
+		if proc and proc.poll() is None:
+			self._emit_log("Stopping model training...")
+			proc.terminate()
+
+	def run(self) -> None:
+		try:
+			from old.remote import run_model
+			import shutil
+			artifact_dir, was_cancelled = run_model(**self._kwargs)
+			self._artifact_dir = artifact_dir
+			if was_cancelled:
+				shutil.rmtree(artifact_dir, ignore_errors=True)
+				self._emit_log("Model training was cancelled. Artifacts deleted.")
+				self.finished.emit(False, "")
+			else:
+				self.finished.emit(True, artifact_dir)
+		except Exception as exc:
+			self._emit_log(f"ERROR: {exc}")
+			if self._artifact_dir:
+				import shutil
+				shutil.rmtree(self._artifact_dir, ignore_errors=True)
+			self.finished.emit(False, "")
+
+
+class GNNCompareWorker(QtCore.QThread):
+	"""Runs remote.run_comparison() off the GUI thread with cancellation support."""
+
+	log_line = QtCore.pyqtSignal(str)
+	finished = QtCore.pyqtSignal(bool, str)  # success, artifact_dir
+
+	def __init__(
+		self,
+		wdn_name: str,
+		model_a_hash: str,
+		model_a_dir: str,
+		dataset_a_dir: str,
+		model_b_hash: str,
+		model_b_dir: str,
+		dataset_b_dir: str,
+		test_set_hash: str | None = None,
+		demand_reconstruction: str = "algebraic",
+		timeout: int = 36000,
+		parent: "QtWidgets.QWidget | None" = None,
+	) -> None:
+		super().__init__(parent)
+		self._kwargs = dict(
+			wdn_name=wdn_name,
+			model_a_hash=model_a_hash,
+			model_a_dir=model_a_dir,
+			dataset_a_dir=dataset_a_dir,
+			model_b_hash=model_b_hash,
+			model_b_dir=model_b_dir,
+			dataset_b_dir=dataset_b_dir,
+			test_set_hash=test_set_hash,
+			demand_reconstruction=demand_reconstruction,
+			timeout=timeout,
+			log_fn=self._emit_log,
+		)
+		self._artifact_dir: str = ""
+
+	def _emit_log(self, line: str) -> None:
+		self.log_line.emit(line)
+
+	def cancel(self) -> None:
+		"""Request cancellation of the running comparison."""
+		self._emit_log("Stopping comparison...")
+		# Comparisons don't use papermill, so they can't be interrupted as cleanly.
+		# Just signal that we want to stop.
+
+	def run(self) -> None:
+		try:
+			from old.remote import run_comparison
+			import shutil
+			artifact_dir, was_cancelled = run_comparison(**self._kwargs)
+			self._artifact_dir = artifact_dir
+			if was_cancelled:
+				shutil.rmtree(artifact_dir, ignore_errors=True)
+				self._emit_log("Comparison was cancelled. Artifacts deleted.")
+				self.finished.emit(False, "")
+			else:
+				self.finished.emit(True, artifact_dir)
+		except Exception as exc:
+			self._emit_log(f"ERROR: {exc}")
+			if self._artifact_dir:
+				import shutil
+				shutil.rmtree(self._artifact_dir, ignore_errors=True)
+			self.finished.emit(False, "")
+
+
 class MainWindow(QtWidgets.QMainWindow):
 	def __init__(self) -> None:
 		super().__init__()
@@ -979,6 +1301,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		splitter.addWidget(left)
 		self._build_local_search_tab()
+		self._build_gnn_tab()
 		self.tabs.currentChanged.connect(self._on_tab_changed)
 		self.plot = NetworkPlot()
 		self.plot.measurement_changed.connect(self._measurement_updated)
@@ -998,8 +1321,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.scenario_name = QtWidgets.QLineEdit(self.scenario_params.scenario_name)
 		self._add_form_row(form, "scenario_name", "Scenario Name", self.scenario_name)
 		self.scenario_source = QtWidgets.QComboBox()
-		self.scenario_source.addItems(["base", "random"])
+		self.scenario_source.addItems(["base", "random", "dirichlet"])
 		self.scenario_source.setCurrentText(self.scenario_params.scenario_source)
+		self.scenario_source.currentTextChanged.connect(self._update_pipe_bounds_visibility)
 		self._add_form_row(form, "scenario_source", "Scenario Source", self.scenario_source)
 
 		self.pipe_bounds = QtWidgets.QCheckBox()
@@ -1011,7 +1335,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._add_form_row(form, "pipe_bound_safeness", "Bound Safeness", self.pipe_bound_safeness)
 
 		self.pipe_bound_method = QtWidgets.QComboBox()
-		self.pipe_bound_method.addItems(["perturb", "montecarlo"])
+		self.pipe_bound_method.addItems(["perturb", "montecarlo", "dirichlet"])
 		self.pipe_bound_method.setCurrentText(self.scenario_params.pipe_bound_method)
 		self.pipe_bound_method.currentTextChanged.connect(self._update_pipe_bounds_visibility)
 		self._add_form_row(form, "pipe_bound_method", "Bound Method", self.pipe_bound_method)
@@ -1043,6 +1367,19 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.pipe_bound_base.addItems(["base", "auto", "scenario"])
 		self.pipe_bound_base.setCurrentText(self.scenario_params.pipe_bound_perturb_base)
 		self._add_form_row(form, "pipe_bound_base", "Perturb Base", self.pipe_bound_base)
+
+		self.dirichlet_extra_demand = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_extra_demand, decimals=4, step=0.1)
+		self._add_form_row(form, "dirichlet_extra_demand", "Dirichlet Extra Demand", self.dirichlet_extra_demand)
+
+		self.dirichlet_samples = QtWidgets.QSpinBox()
+		self.dirichlet_samples.setRange(1, 10000)
+		self.dirichlet_samples.setValue(self.scenario_params.dirichlet_samples)
+		self._add_form_row(form, "dirichlet_samples", "Dirichlet Samples", self.dirichlet_samples)
+
+		self.dirichlet_seed = QtWidgets.QSpinBox()
+		self.dirichlet_seed.setRange(0, 2**31 - 1)
+		self.dirichlet_seed.setValue(self.scenario_params.dirichlet_seed)
+		self._add_form_row(form, "dirichlet_seed", "Dirichlet Seed", self.dirichlet_seed)
 
 		self.generate_button = QtWidgets.QPushButton("Generate Scenario")
 		self.generate_button.clicked.connect(self._generate_scenario)
@@ -1114,6 +1451,11 @@ class MainWindow(QtWidgets.QMainWindow):
 			"pipe_bound_base",
 		]:
 			self._set_row_visible(key, perturb_only)
+
+		dirichlet_on = method == "dirichlet" or self.scenario_source.currentText() == "dirichlet"
+		self._set_row_visible("dirichlet_extra_demand", dirichlet_on)
+		self._set_row_visible("dirichlet_samples", pipe_bounds_on and method == "dirichlet")
+		self._set_row_visible("dirichlet_seed", pipe_bounds_on and method == "dirichlet")
 
 	def _build_solver_tab(self) -> None:
 		# Outer scrollable container
@@ -1222,6 +1564,1172 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		self._ls_tab_index = self.tabs.addTab(scroll, "Local Search")
 
+	def _build_gnn_tab(self) -> None:
+		"""GNN tab with Run and Compare sub-pages."""
+		outer = QtWidgets.QWidget()
+		outer_layout = QtWidgets.QVBoxLayout(outer)
+		outer_layout.setContentsMargins(4, 4, 4, 4)
+		gnn_tabs = QtWidgets.QTabWidget()
+		outer_layout.addWidget(gnn_tabs)
+
+		# ── Run sub-page ─────────────────────────────────────────────────────
+		run_scroll = QtWidgets.QScrollArea()
+		run_scroll.setWidgetResizable(True)
+		run_widget = QtWidgets.QWidget()
+		run_scroll.setWidget(run_widget)
+		run_layout = QtWidgets.QVBoxLayout(run_widget)
+		run_layout.setContentsMargins(4, 4, 4, 4)
+
+		# Dataset group
+		ds_group = QtWidgets.QGroupBox("Dataset")
+		ds_form = QtWidgets.QFormLayout(ds_group)
+
+		default_nodes = self._gnn_default_nodes()
+		self.gnn_default_nodes_label = QtWidgets.QLabel(", ".join(default_nodes) if default_nodes else "(none)")
+		ds_form.addRow("Default nodes:", self.gnn_default_nodes_label)
+
+		self.gnn_use_default_nodes = QtWidgets.QCheckBox("Use default placement")
+		self.gnn_use_default_nodes.setChecked(False)
+		self.gnn_use_default_nodes.toggled.connect(self._gnn_refresh_dataset_status)
+		ds_form.addRow("Default placement:", self.gnn_use_default_nodes)
+
+		self.gnn_nodes_input = QtWidgets.QLineEdit("")
+		self.gnn_nodes_input.setPlaceholderText("comma-separated node ids")
+		self.gnn_nodes_input.textChanged.connect(self._gnn_refresh_dataset_status)
+		ds_form.addRow("Nodes to use:", self.gnn_nodes_input)
+
+		self.gnn_nodes_info_label = QtWidgets.QLabel("")
+		self.gnn_nodes_info_label.setWordWrap(True)
+		ds_form.addRow("Selection info:", self.gnn_nodes_info_label)
+
+		self.gnn_extra_demand = self._new_double_spin(0.0, 1e6, 1.2, decimals=4, step=0.1)
+		self.gnn_extra_demand.valueChanged.connect(self._gnn_refresh_dataset_status)
+		ds_form.addRow("Extra demand:", self.gnn_extra_demand)
+
+		self.gnn_num_sims = QtWidgets.QSpinBox()
+		self.gnn_num_sims.setRange(1, 1000000)
+		self.gnn_num_sims.setValue(5000)
+		self.gnn_num_sims.valueChanged.connect(self._gnn_refresh_dataset_status)
+		ds_form.addRow("Num simulations:", self.gnn_num_sims)
+
+		self.gnn_demand_model = QtWidgets.QComboBox()
+		self.gnn_demand_model.addItems(["uniform", "dirichlet"])
+		self.gnn_demand_model.setCurrentText("dirichlet")
+		self.gnn_demand_model.currentTextChanged.connect(self._gnn_refresh_dataset_status)
+		ds_form.addRow("Demand model:", self.gnn_demand_model)
+
+		ds_hash_row = QtWidgets.QHBoxLayout()
+		self.gnn_ds_hash_label = QtWidgets.QLabel("—")
+		ds_hash_row.addWidget(self.gnn_ds_hash_label)
+		self.gnn_ds_status_label = QtWidgets.QLabel("○ Missing")
+		ds_hash_row.addWidget(self.gnn_ds_status_label)
+		ds_hash_row.addStretch()
+		ds_form.addRow("Dataset hash:", ds_hash_row)
+
+		self.gnn_generate_btn = QtWidgets.QPushButton("Generate Dataset")
+		self.gnn_generate_btn.clicked.connect(self._gnn_generate_dataset)
+		ds_form.addRow(self.gnn_generate_btn)
+		run_layout.addWidget(ds_group)
+
+		# Model group
+		mdl_group = QtWidgets.QGroupBox("Model")
+		mdl_form = QtWidgets.QFormLayout(mdl_group)
+
+		self.gnn_epochs = QtWidgets.QSpinBox()
+		self.gnn_epochs.setRange(1, 10000)
+		self.gnn_epochs.setValue(50)
+		self.gnn_epochs.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Epochs:", self.gnn_epochs)
+
+		self.gnn_lr = self._new_double_spin(1e-6, 1.0, 0.001, decimals=6, step=0.0001)
+		self.gnn_lr.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Learning rate:", self.gnn_lr)
+
+		self.gnn_batch_size = QtWidgets.QSpinBox()
+		self.gnn_batch_size.setRange(1, 4096)
+		self.gnn_batch_size.setValue(32)
+		self.gnn_batch_size.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Batch size:", self.gnn_batch_size)
+
+		self.gnn_hidden_dim = QtWidgets.QSpinBox()
+		self.gnn_hidden_dim.setRange(1, 4096)
+		self.gnn_hidden_dim.setValue(64)
+		self.gnn_hidden_dim.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Hidden dim:", self.gnn_hidden_dim)
+
+		self.gnn_num_layers = QtWidgets.QSpinBox()
+		self.gnn_num_layers.setRange(1, 32)
+		self.gnn_num_layers.setValue(3)
+		self.gnn_num_layers.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Num layers:", self.gnn_num_layers)
+
+		self.gnn_seed = QtWidgets.QSpinBox()
+		self.gnn_seed.setRange(0, 2**31 - 1)
+		self.gnn_seed.setValue(42)
+		self.gnn_seed.valueChanged.connect(self._gnn_refresh_model_status)
+		mdl_form.addRow("Seed:", self.gnn_seed)
+
+		mdl_hash_row = QtWidgets.QHBoxLayout()
+		self.gnn_mdl_hash_label = QtWidgets.QLabel("—")
+		mdl_hash_row.addWidget(self.gnn_mdl_hash_label)
+		self.gnn_mdl_status_label = QtWidgets.QLabel("○ Missing")
+		mdl_hash_row.addWidget(self.gnn_mdl_status_label)
+		mdl_hash_row.addStretch()
+		mdl_form.addRow("Model hash:", mdl_hash_row)
+
+		self.gnn_train_btn = QtWidgets.QPushButton("Train Model")
+		self.gnn_train_btn.setEnabled(False)
+		self.gnn_train_btn.clicked.connect(self._gnn_train_model)
+		mdl_form.addRow(self.gnn_train_btn)
+		run_layout.addWidget(mdl_group)
+
+		# Control group (Stop button)
+		ctrl_group = QtWidgets.QGroupBox("Control")
+		ctrl_layout = QtWidgets.QHBoxLayout(ctrl_group)
+		self.gnn_stop_btn = QtWidgets.QPushButton("Stop")
+		self.gnn_stop_btn.setStyleSheet("background-color: #ff6b6b; color: white; font-weight: bold;")
+		self.gnn_stop_btn.setEnabled(False)
+		self.gnn_stop_btn.clicked.connect(self._gnn_stop_worker)
+		ctrl_layout.addWidget(self.gnn_stop_btn)
+		ctrl_layout.addStretch()
+		run_layout.addWidget(ctrl_group)
+
+		# Log
+		log_group = QtWidgets.QGroupBox("Log")
+		log_layout = QtWidgets.QVBoxLayout(log_group)
+		self.gnn_log = QtWidgets.QPlainTextEdit()
+		self.gnn_log.setReadOnly(True)
+		self.gnn_log.setMaximumBlockCount(2000)
+		self.gnn_log.setMinimumHeight(120)
+		log_layout.addWidget(self.gnn_log)
+		run_layout.addWidget(log_group)
+		run_layout.addStretch()
+
+		gnn_tabs.addTab(run_scroll, "Run")
+
+		# ── Compare sub-page ─────────────────────────────────────────────────
+		cmp_scroll = QtWidgets.QScrollArea()
+		cmp_scroll.setWidgetResizable(True)
+		cmp_widget = QtWidgets.QWidget()
+		cmp_scroll.setWidget(cmp_widget)
+		cmp_layout = QtWidgets.QVBoxLayout(cmp_widget)
+		cmp_layout.setContentsMargins(4, 4, 4, 4)
+
+		# Model selectors
+		sel_group = QtWidgets.QGroupBox("Models")
+		sel_form = QtWidgets.QFormLayout(sel_group)
+		self.gnn_model_a_combo = QtWidgets.QComboBox()
+		sel_form.addRow("Model A:", self.gnn_model_a_combo)
+		self.gnn_model_b_combo = QtWidgets.QComboBox()
+		sel_form.addRow("Model B:", self.gnn_model_b_combo)
+		refresh_btn = QtWidgets.QPushButton("Refresh model list")
+		refresh_btn.clicked.connect(self._gnn_populate_model_combos)
+		sel_form.addRow(refresh_btn)
+		cmp_layout.addWidget(sel_group)
+
+		# Shared test set
+		test_group = QtWidgets.QGroupBox("Shared Test Set")
+		test_form = QtWidgets.QFormLayout(test_group)
+		self.gnn_test_sims = QtWidgets.QSpinBox()
+		self.gnn_test_sims.setRange(1, 100000)
+		self.gnn_test_sims.setValue(1000)
+		self.gnn_test_sims.valueChanged.connect(self._gnn_refresh_test_status)
+		test_form.addRow("Test simulations:", self.gnn_test_sims)
+		self.gnn_test_seed = QtWidgets.QSpinBox()
+		self.gnn_test_seed.setRange(0, 2**31 - 1)
+		self.gnn_test_seed.setValue(9999)
+		self.gnn_test_seed.valueChanged.connect(self._gnn_refresh_test_status)
+		test_form.addRow("Test seed:", self.gnn_test_seed)
+		self.gnn_test_demand_model = QtWidgets.QComboBox()
+		self.gnn_test_demand_model.addItems(["uniform", "dirichlet"])
+		self.gnn_test_demand_model.currentTextChanged.connect(self._gnn_refresh_test_status)
+		test_form.addRow("Demand model:", self.gnn_test_demand_model)
+		test_hash_row = QtWidgets.QHBoxLayout()
+		self.gnn_test_hash_label = QtWidgets.QLabel("—")
+		test_hash_row.addWidget(self.gnn_test_hash_label)
+		self.gnn_test_status_label = QtWidgets.QLabel("○ Missing")
+		test_hash_row.addWidget(self.gnn_test_status_label)
+		test_hash_row.addStretch()
+		test_form.addRow("Test set hash:", test_hash_row)
+		self.gnn_generate_test_btn = QtWidgets.QPushButton("Generate shared test set")
+		self.gnn_generate_test_btn.clicked.connect(self._gnn_generate_test_set)
+		test_form.addRow(self.gnn_generate_test_btn)
+		cmp_layout.addWidget(test_group)
+
+		# Comparison controls
+		comp_ctrl_group = QtWidgets.QGroupBox("Comparison")
+		comp_ctrl_form = QtWidgets.QFormLayout(comp_ctrl_group)
+		self.gnn_reconstruction = QtWidgets.QComboBox()
+		self.gnn_reconstruction.addItems(["algebraic", "wntr"])
+		comp_ctrl_form.addRow("Reconstruction:", self.gnn_reconstruction)
+		cmp_hash_row = QtWidgets.QHBoxLayout()
+		self.gnn_cmp_hash_label = QtWidgets.QLabel("—")
+		cmp_hash_row.addWidget(self.gnn_cmp_hash_label)
+		self.gnn_cmp_status_label = QtWidgets.QLabel("○ Missing")
+		cmp_hash_row.addWidget(self.gnn_cmp_status_label)
+		cmp_hash_row.addStretch()
+		comp_ctrl_form.addRow("Comparison hash:", cmp_hash_row)
+		self.gnn_run_comparison_btn = QtWidgets.QPushButton("Run Comparison")
+		self.gnn_run_comparison_btn.setEnabled(False)
+		self.gnn_run_comparison_btn.clicked.connect(self._gnn_run_comparison)
+		comp_ctrl_form.addRow(self.gnn_run_comparison_btn)
+		cmp_layout.addWidget(comp_ctrl_group)
+
+		# Results table
+		results_group = QtWidgets.QGroupBox("Results")
+		results_layout = QtWidgets.QVBoxLayout(results_group)
+		self.gnn_results_table = QtWidgets.QTableWidget()
+		self.gnn_results_table.setColumnCount(3)
+		self.gnn_results_table.setHorizontalHeaderLabels(["Metric", "Model A", "Model B"])
+		self.gnn_results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+		self.gnn_results_table.horizontalHeader().setStretchLastSection(True)
+		results_layout.addWidget(self.gnn_results_table)
+		self.gnn_export_btn = QtWidgets.QPushButton("Export results to JSON")
+		self.gnn_export_btn.setEnabled(False)
+		self.gnn_export_btn.clicked.connect(self._gnn_export_results)
+		results_layout.addWidget(self.gnn_export_btn)
+		self.gnn_example_btn = QtWidgets.QPushButton("Show pressure-demand example")
+		self.gnn_example_btn.setEnabled(False)
+		self.gnn_example_btn.clicked.connect(self._gnn_show_pressure_demand_example)
+		results_layout.addWidget(self.gnn_example_btn)
+		cmp_layout.addWidget(results_group)
+		cmp_layout.addStretch()
+
+		gnn_tabs.addTab(cmp_scroll, "Compare")
+
+		self._gnn_tab_index = self.tabs.addTab(outer, "GNN")
+		self._gnn_dataset_hash: str = ""
+		self._gnn_model_hash: str = ""
+		self._gnn_dataset_dir: str = ""
+		self._gnn_worker: "GNNDatasetWorker | GNNModelWorker | GNNCompareWorker | None" = None
+		self._gnn_results: dict = {}
+		self._gnn_refresh_dataset_status()
+
+	def _gnn_default_nodes(self) -> List[str]:
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return []
+		json_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.json")
+		if not os.path.isfile(json_path):
+			return []
+		try:
+			with open(json_path, encoding="utf-8") as f:
+				cfg = json.load(f)
+			return [str(n) for n in cfg.get("measurement_nodes", [])]
+		except (OSError, json.JSONDecodeError):
+			return []
+
+	def _gnn_current_nodes(self) -> List[str]:
+		default_nodes = sorted(self._gnn_default_nodes())
+		if self.gnn_use_default_nodes.isChecked():
+			return default_nodes
+		text = self.gnn_nodes_input.text()
+		tokens = [t.strip() for t in text.split(",") if t.strip()]
+		return sorted(dict.fromkeys(tokens))
+
+	def _gnn_update_nodes_info(self) -> None:
+		default_nodes = sorted(self._gnn_default_nodes())
+		current_nodes = self._gnn_current_nodes()
+		default_count = len(default_nodes)
+		current_count = len(current_nodes)
+
+		self.gnn_nodes_input.setEnabled(not self.gnn_use_default_nodes.isChecked())
+
+		if self.gnn_use_default_nodes.isChecked():
+			self.gnn_nodes_info_label.setText(
+				f"Using the default placement with {default_count} node(s): "
+				+ (", ".join(default_nodes) if default_nodes else "(none)")
+			)
+			return
+
+		if current_count == 0:
+			self.gnn_nodes_info_label.setText(
+				f"Manual placement selected. Enter node ids above. The default placement uses {default_count} node(s)."
+			)
+			return
+
+		delta = current_count - default_count
+		if delta < 0:
+			comparison = f"{abs(delta)} fewer than"
+		elif delta > 0:
+			comparison = f"{delta} more than"
+		else:
+			comparison = "the same number as"
+
+		self.gnn_nodes_info_label.setText(
+			f"Manual placement uses {current_count} node(s), {comparison} the default placement ({default_count})."
+		)
+
+	def _gnn_nodes_display_text(self, nodes: List[str], default_nodes: List[str]) -> str:
+		n = sorted(str(x) for x in nodes)
+		d = sorted(str(x) for x in default_nodes)
+		if n == d and n:
+			return "standard"
+		if not n:
+			return "none"
+		return "{" + ",".join(n) + "}"
+
+	def _gnn_refresh_dataset_status(self) -> None:
+		from old.gnn_cache import dataset_inputs, dataset_hash, find_dataset
+		self._gnn_update_nodes_info()
+		wdn = self.wdn_input.currentText().strip()
+		current_nodes = self._gnn_current_nodes()
+		if not current_nodes:
+			self._gnn_dataset_hash = ""
+			self._gnn_dataset_dir = ""
+			self.gnn_ds_hash_label.setText("—")
+			self.gnn_ds_status_label.setText("○ Missing")
+			self.gnn_generate_btn.setEnabled(False)
+			self._gnn_refresh_model_status()
+			return
+		inp = dataset_inputs(
+			wdn=wdn,
+			measurement_nodes=current_nodes,
+			extra_demand=self.gnn_extra_demand.value(),
+			num_simulations=self.gnn_num_sims.value(),
+			demand_model=self.gnn_demand_model.currentText(),
+		)
+		h = dataset_hash(inp)
+		self._gnn_dataset_hash = h
+		exists = find_dataset(wdn, h) is not None
+		self.gnn_ds_hash_label.setText(h[:8] + "...")
+		self.gnn_ds_status_label.setText("● Exists" if exists else "○ Missing")
+		self.gnn_generate_btn.setEnabled(not exists)
+		if exists:
+			self._gnn_dataset_dir = find_dataset(wdn, h) or ""
+		self._gnn_refresh_model_status()
+
+	def _gnn_refresh_model_status(self) -> None:
+		from old.gnn_cache import model_inputs, model_hash, find_model, find_dataset
+		wdn = self.wdn_input.currentText().strip()
+		if not self._gnn_dataset_hash:
+			self.gnn_mdl_hash_label.setText("—")
+			self.gnn_mdl_status_label.setText("○ Missing")
+			self.gnn_train_btn.setEnabled(False)
+			return
+		inp = model_inputs(
+			dataset_hash=self._gnn_dataset_hash,
+			epochs=self.gnn_epochs.value(),
+			lr=self.gnn_lr.value(),
+			batch_size=self.gnn_batch_size.value(),
+			hidden_dim=self.gnn_hidden_dim.value(),
+			num_layers=self.gnn_num_layers.value(),
+			seed=self.gnn_seed.value(),
+		)
+		h = model_hash(inp)
+		self._gnn_model_hash = h
+		exists = find_model(wdn, h) is not None
+		ds_ready = bool(self._gnn_dataset_dir) or (find_dataset(wdn, self._gnn_dataset_hash) is not None)
+		self.gnn_mdl_hash_label.setText(h[:8] + "...")
+		self.gnn_mdl_status_label.setText("● Exists" if exists else "○ Missing")
+		self.gnn_train_btn.setEnabled(ds_ready and not exists)
+
+	def _gnn_refresh_test_status(self) -> None:
+		from old.gnn_cache import test_set_inputs, test_set_hash, find_test_set
+		wdn = self.wdn_input.currentText().strip()
+		inp = test_set_inputs(
+			wdn=wdn,
+			extra_demand=self.gnn_extra_demand.value(),
+			num_simulations=self.gnn_test_sims.value(),
+			demand_model=self.gnn_test_demand_model.currentText(),
+			seed=self.gnn_test_seed.value(),
+		)
+		h = test_set_hash(inp)
+		exists = find_test_set(wdn, h) is not None
+		self.gnn_test_hash_label.setText(h[:8] + "...")
+		self.gnn_test_status_label.setText("● Exists" if exists else "○ Missing")
+		self.gnn_generate_test_btn.setEnabled(not exists)
+
+	def _gnn_generate_test_set(self) -> None:
+		if self._gnn_worker is not None and self._gnn_worker.isRunning():
+			return
+		wdn = self.wdn_input.currentText().strip()
+		self.gnn_log.appendPlainText(f"Starting shared test-set generation for {wdn}...")
+		self.gnn_generate_test_btn.setEnabled(False)
+		self.gnn_stop_btn.setEnabled(True)
+		worker = GNNTestSetWorker(
+			wdn_name=wdn,
+			extra_demand=self.gnn_extra_demand.value(),
+			num_simulations=self.gnn_test_sims.value(),
+			demand_model=self.gnn_test_demand_model.currentText(),
+			seed=self.gnn_test_seed.value(),
+			parent=self,
+		)
+		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.finished.connect(self._gnn_on_test_set_done)
+		self._gnn_worker = worker
+		worker.start()
+
+	def _gnn_on_test_set_done(self, success: bool, artifact_dir: str) -> None:
+		self.gnn_stop_btn.setEnabled(False)
+		if success:
+			self.gnn_log.appendPlainText(f"Shared test set ready: {artifact_dir}")
+		else:
+			self.gnn_log.appendPlainText("Shared test-set generation failed or was cancelled.")
+		self._gnn_refresh_test_status()
+
+	def _gnn_generate_dataset(self) -> None:
+		if self._gnn_worker is not None and self._gnn_worker.isRunning():
+			return
+		wdn = self.wdn_input.currentText().strip()
+		self.gnn_log.appendPlainText(f"Starting dataset generation for {wdn}...")
+		self.gnn_generate_btn.setEnabled(False)
+		self.gnn_stop_btn.setEnabled(True)
+		worker = GNNDatasetWorker(
+			wdn_name=wdn,
+			measurement_nodes=self._gnn_current_nodes(),
+			extra_demand=self.gnn_extra_demand.value(),
+			num_simulations=self.gnn_num_sims.value(),
+			demand_model=self.gnn_demand_model.currentText(),
+			node_label_threshold=0.0,
+			parent=self,
+		)
+		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.finished.connect(self._gnn_on_dataset_done)
+		self._gnn_worker = worker
+		worker.start()
+
+	def _gnn_on_dataset_done(self, success: bool, artifact_dir: str) -> None:
+		self.gnn_stop_btn.setEnabled(False)
+		if success:
+			self.gnn_log.appendPlainText(f"Dataset ready: {artifact_dir}")
+			self._gnn_dataset_dir = artifact_dir
+		else:
+			self.gnn_log.appendPlainText("Dataset generation failed or was cancelled.")
+		self._gnn_refresh_dataset_status()
+
+	def _gnn_train_model(self) -> None:
+		if self._gnn_worker is not None and self._gnn_worker.isRunning():
+			return
+		wdn = self.wdn_input.currentText().strip()
+		if not self._gnn_dataset_dir:
+			from old.gnn_cache import find_dataset
+			self._gnn_dataset_dir = find_dataset(wdn, self._gnn_dataset_hash) or ""
+		if not self._gnn_dataset_dir:
+			self.gnn_log.appendPlainText("Dataset not found — generate it first.")
+			return
+		self.gnn_log.appendPlainText(f"Starting model training for {wdn}...")
+		self.gnn_train_btn.setEnabled(False)
+		self.gnn_stop_btn.setEnabled(True)
+		worker = GNNModelWorker(
+			wdn_name=wdn,
+			d_hash=self._gnn_dataset_hash,
+			dataset_dir=self._gnn_dataset_dir,
+			epochs=self.gnn_epochs.value(),
+			lr=self.gnn_lr.value(),
+			batch_size=self.gnn_batch_size.value(),
+			hidden_dim=self.gnn_hidden_dim.value(),
+			num_layers=self.gnn_num_layers.value(),
+			seed=self.gnn_seed.value(),
+			parent=self,
+		)
+		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.finished.connect(self._gnn_on_model_done)
+		self._gnn_worker = worker
+		worker.start()
+
+	def _gnn_on_model_done(self, success: bool, artifact_dir: str) -> None:
+		self.gnn_stop_btn.setEnabled(False)
+		if success:
+			self.gnn_log.appendPlainText(f"Model ready: {artifact_dir}")
+		else:
+			self.gnn_log.appendPlainText("Model training failed or was cancelled.")
+		self._gnn_refresh_model_status()
+		self._gnn_populate_model_combos()
+
+	def _gnn_populate_model_combos(self) -> None:
+		from old.gnn_cache import list_models, find_dataset
+		from pathlib import Path
+		wdn = self.wdn_input.currentText().strip()
+		models = list_models(wdn)
+		default_nodes = self._gnn_default_nodes()
+		for combo in [self.gnn_model_a_combo, self.gnn_model_b_combo]:
+			combo.clear()
+			for m in models:
+				inputs = m.get("inputs", {})
+				ds_hash = inputs.get("dataset_hash", "?")[:8]
+				node_text = "unknown"
+				ds_full_hash = inputs.get("dataset_hash")
+				if ds_full_hash:
+					ds_dir = find_dataset(wdn, ds_full_hash)
+					if ds_dir:
+						manifest_path = Path(ds_dir) / "manifest.json"
+						if manifest_path.exists():
+							try:
+								with open(manifest_path, encoding="utf-8") as f:
+									ds_manifest = json.load(f)
+								nodes = ds_manifest.get("inputs", {}).get("measurement_nodes", [])
+								node_text = self._gnn_nodes_display_text(nodes, default_nodes)
+							except (OSError, json.JSONDecodeError):
+								pass
+				combo.addItem(
+					f"{m['hash'][:8]}... (ds:{ds_hash}, nodes:{node_text})",
+					userData=m["hash"],
+				)
+		has_two = self.gnn_model_a_combo.count() >= 1 and self.gnn_model_b_combo.count() >= 1
+		self.gnn_run_comparison_btn.setEnabled(has_two)
+
+	def _gnn_stop_worker(self) -> None:
+		"""Cancel the currently running worker."""
+		if self._gnn_worker and self._gnn_worker.isRunning():
+			self.gnn_log.appendPlainText("Requesting cancellation...")
+			self._gnn_worker.cancel()
+			self.gnn_stop_btn.setEnabled(False)
+
+	def _gnn_run_comparison(self) -> None:
+		if self._gnn_worker is not None and self._gnn_worker.isRunning():
+			return
+		if self.gnn_model_a_combo.count() < 1 or self.gnn_model_b_combo.count() < 1:
+			QtWidgets.QMessageBox.warning(self, "Missing Models", "Select both Model A and Model B.")
+			return
+
+		wdn = self.wdn_input.currentText().strip()
+		model_a_hash = self.gnn_model_a_combo.currentData()
+		model_b_hash = self.gnn_model_b_combo.currentData()
+
+		if not model_a_hash or not model_b_hash:
+			QtWidgets.QMessageBox.warning(self, "Invalid Selection", "Could not get model hashes.")
+			return
+
+		from old.gnn_cache import find_model, find_dataset
+		from old.gnn_cache import test_set_inputs, test_set_hash, find_test_set
+
+		model_a_dir = find_model(wdn, model_a_hash)
+		model_b_dir = find_model(wdn, model_b_hash)
+		if not model_a_dir or not model_b_dir:
+			QtWidgets.QMessageBox.warning(self, "Model Not Found", "Could not locate one or both models.")
+			return
+
+		# Get dataset dirs from model manifests
+		def _get_dataset_dir(model_h):
+			from pathlib import Path
+			manifest = Path(find_model(wdn, model_h)) / "manifest.json"
+			if manifest.exists():
+				try:
+					with open(manifest, encoding="utf-8") as f:
+						m = json.load(f)
+					ds_h = m.get("inputs", {}).get("dataset_hash")
+					if ds_h:
+						return find_dataset(wdn, ds_h)
+				except (OSError, json.JSONDecodeError):
+					pass
+			return None
+
+		dataset_a_dir = _get_dataset_dir(model_a_hash)
+		dataset_b_dir = _get_dataset_dir(model_b_hash)
+		if not dataset_a_dir or not dataset_b_dir:
+			QtWidgets.QMessageBox.warning(self, "Dataset Not Found", "Could not locate dataset for one or both models.")
+			return
+
+		test_set_hash_value = None
+		test_inp = test_set_inputs(
+			wdn=wdn,
+			extra_demand=self.gnn_extra_demand.value(),
+			num_simulations=self.gnn_test_sims.value(),
+			demand_model=self.gnn_test_demand_model.currentText(),
+			seed=self.gnn_test_seed.value(),
+		)
+		test_set_hash_value = test_set_hash(test_inp)
+		if find_test_set(wdn, test_set_hash_value):
+			self.gnn_log.appendPlainText(f"Using shared test set: {test_set_hash_value[:8]}")
+
+		self.gnn_log.appendPlainText(f"Starting comparison: {model_a_hash[:8]} vs {model_b_hash[:8]}")
+		self.gnn_run_comparison_btn.setEnabled(False)
+		self.gnn_stop_btn.setEnabled(True)
+
+		worker = GNNCompareWorker(
+			wdn_name=wdn,
+			model_a_hash=model_a_hash,
+			model_a_dir=model_a_dir,
+			dataset_a_dir=dataset_a_dir,
+			model_b_hash=model_b_hash,
+			model_b_dir=model_b_dir,
+			dataset_b_dir=dataset_b_dir,
+			test_set_hash=test_set_hash_value,
+			demand_reconstruction=self.gnn_reconstruction.currentText(),
+			parent=self,
+		)
+		worker.log_line.connect(self.gnn_log.appendPlainText)
+		worker.finished.connect(self._gnn_on_comparison_done)
+		self._gnn_worker = worker
+		worker.start()
+
+	def _gnn_on_comparison_done(self, success: bool, artifact_dir: str) -> None:
+		self.gnn_stop_btn.setEnabled(False)
+		if success:
+			self.gnn_log.appendPlainText(f"Comparison complete: {artifact_dir}")
+			self._gnn_load_results(artifact_dir)
+		else:
+			self.gnn_log.appendPlainText("Comparison failed or was cancelled.")
+		self.gnn_run_comparison_btn.setEnabled(True)
+
+	def _gnn_load_results(self, artifact_dir: str) -> None:
+		"""Load comparison results from results.json and populate the table."""
+		from pathlib import Path
+		results_path = Path(artifact_dir) / "results.json"
+		if not results_path.exists():
+			self.gnn_log.appendPlainText(f"Results file not found: {results_path}")
+			return
+		try:
+			with open(results_path, encoding="utf-8") as f:
+				results = json.load(f)
+			self._gnn_results = results
+			self._gnn_populate_results_table(results)
+		except (OSError, json.JSONDecodeError) as e:
+			self.gnn_log.appendPlainText(f"Error loading results: {e}")
+
+	def _gnn_populate_results_table(self, results: dict) -> None:
+		"""Populate the results QTableWidget from comparison results."""
+		self.gnn_results_table.setRowCount(0)
+		metrics_a = results.get("metrics_a", {})
+		metrics_b = results.get("metrics_b", {})
+		label_a = results.get("label_a", "Model A")
+		label_b = results.get("label_b", "Model B")
+
+		# Update column headers
+		self.gnn_results_table.setHorizontalHeaderLabels(["Metric", label_a, label_b])
+
+		# Common metrics to display
+		metric_keys = [
+			"r2", "mse", "mae", "rmse", "nmae",
+			"mape", "max_pe", "accuracy_10pct", "accuracy_5pct",
+		]
+
+		row = 0
+		for key in metric_keys:
+			val_a = metrics_a.get(key)
+			val_b = metrics_b.get(key)
+			if val_a is None and val_b is None:
+				continue
+
+			self.gnn_results_table.insertRow(row)
+			self.gnn_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(key))
+			self.gnn_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{val_a:.4f}" if val_a is not None else "—"))
+			self.gnn_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{val_b:.4f}" if val_b is not None else "—"))
+			row += 1
+
+		# Demand reconstruction metrics
+		demand_metrics_a = results.get("demand_metrics_a") or {}
+		demand_metrics_b = results.get("demand_metrics_b") or {}
+		demand_keys = ["mae", "rmse", "r2", "mape"]
+		for key in demand_keys:
+			val_a = demand_metrics_a.get(key)
+			val_b = demand_metrics_b.get(key)
+			if val_a is None and val_b is None:
+				continue
+			self.gnn_results_table.insertRow(row)
+			self.gnn_results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(f"demand:{key}"))
+			self.gnn_results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{val_a:.4f}" if val_a is not None else "—"))
+			self.gnn_results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{val_b:.4f}" if val_b is not None else "—"))
+			row += 1
+
+		self.gnn_export_btn.setEnabled(bool(self._gnn_results))
+		self.gnn_example_btn.setEnabled(bool(self._gnn_results))
+
+	def _gnn_show_pressure_demand_example(self) -> None:
+		if not self._gnn_results:
+			QtWidgets.QMessageBox.information(self, "No Comparison Results", "Run a comparison first.")
+			return
+
+		try:
+			import pickle
+			from pathlib import Path
+			import numpy as np
+			import torch
+			from old.compare_pressure import GCN, _denorm, _headloss_n_from_inp, _reconstruct_demands, _run_inference
+			from old.gnn_cache import find_dataset, find_model
+		except Exception as exc:
+			QtWidgets.QMessageBox.critical(self, "Unavailable", f"Cannot load comparison helpers: {exc}")
+			return
+
+		wdn = str(self._gnn_results.get("wdn_name") or self.wdn_input.currentText().strip())
+		model_a_hash = str(self._gnn_results.get("model_a_hash") or self.gnn_model_a_combo.currentData() or "")
+		model_b_hash = str(self._gnn_results.get("model_b_hash") or self.gnn_model_b_combo.currentData() or "")
+		if not wdn or not model_a_hash or not model_b_hash:
+			QtWidgets.QMessageBox.warning(self, "Missing Context", "Comparison metadata is incomplete. Run a fresh comparison first.")
+			return
+
+		def _dataset_dir(model_hash: str, fallback_key: str) -> str:
+			dir_path = str(self._gnn_results.get(fallback_key) or "")
+			if dir_path:
+				return dir_path
+			model_dir = str(self._gnn_results.get(fallback_key.replace("dataset", "model")) or "")
+			if not model_dir and model_hash:
+				model_dir = find_model(wdn, model_hash) or ""
+			if not model_dir:
+				return ""
+			manifest = os.path.join(model_dir, "manifest.json")
+			if not os.path.isfile(manifest):
+				return ""
+			try:
+				with open(manifest, encoding="utf-8") as f:
+					manifest_data = json.load(f)
+				dataset_hash = manifest_data.get("inputs", {}).get("dataset_hash")
+				if dataset_hash:
+					return find_dataset(wdn, dataset_hash) or ""
+			except (OSError, json.JSONDecodeError):
+				return ""
+			return ""
+
+		model_a_dir = str(self._gnn_results.get("model_a_dir") or find_model(wdn, model_a_hash) or "")
+		model_b_dir = str(self._gnn_results.get("model_b_dir") or find_model(wdn, model_b_hash) or "")
+		dataset_a_dir = _dataset_dir(model_a_hash, "dataset_a_dir")
+		dataset_b_dir = _dataset_dir(model_b_hash, "dataset_b_dir")
+		if not model_a_dir or not model_b_dir or not dataset_a_dir or not dataset_b_dir:
+			QtWidgets.QMessageBox.warning(self, "Missing Artifacts", "Could not resolve model/dataset paths for the example plot.")
+			return
+
+		def _load_model(model_dir: str, input_dim: int):
+			model = GCN(dim_in=input_dim, dim_h=256, dim_out=1)
+			state = torch.load(os.path.join(model_dir, "best_model.pt"), map_location="cpu")
+			model.load_state_dict(state)
+			model.eval()
+			return model
+
+		def _load_sample_payload(dataset_dir: str, model_dir: str):
+			data_dir = os.path.join(dataset_dir, "data_generator") if os.path.isdir(os.path.join(dataset_dir, "data_generator")) else dataset_dir
+			stats_path = os.path.join(data_dir, "dataset_stats.json")
+			artifacts_path = os.path.join(data_dir, "evaluation_artifacts.json")
+			test_path = os.path.join(data_dir, "test_dataset.pt")
+			graph_path = os.path.join(data_dir, "graph_with_measurements.pickle")
+			with open(stats_path, encoding="utf-8") as f:
+				stats = json.load(f)
+			with open(artifacts_path, encoding="utf-8") as f:
+				artifacts = json.load(f)
+			with open(graph_path, "rb") as f:
+				graph = pickle.load(f)
+			dataset = torch.load(test_path, weights_only=False)
+			return data_dir, stats, artifacts, graph, dataset
+
+		try:
+			_, stats_a, artifacts_a, graph_a, dataset_a = _load_sample_payload(dataset_a_dir, model_a_dir)
+			_, stats_b, artifacts_b, graph_b, dataset_b = _load_sample_payload(dataset_b_dir, model_b_dir)
+		except Exception as exc:
+			QtWidgets.QMessageBox.critical(self, "Load Failed", f"Could not load comparison artifacts: {exc}")
+			return
+
+		if not dataset_a or not dataset_b:
+			QtWidgets.QMessageBox.warning(self, "No Data", "Comparison datasets are empty.")
+			return
+
+		def _prepare_example(preds_all, actuals_all, sample_idx: int, stats: dict, artifacts: dict, graph, dataset):
+			def _clean_node_name(node_name: str) -> str:
+				s = str(node_name)
+				return s[5:] if s.startswith("meas_") else s
+
+			def _node_sort_key(node_name: str):
+				s = str(node_name)
+				if s.isdigit():
+					return (0, int(s))
+				return (1, s)
+
+			pred_phys = _denorm(preds_all[sample_idx: sample_idx + 1], stats)[0]
+			actual_phys = _denorm(actuals_all[sample_idx: sample_idx + 1], stats)[0]
+			node_mapping = artifacts.get("node_mapping", {})
+			measurement_nodes = set()
+			for n in artifacts.get("measurement_nodes", []) or []:
+				measurement_nodes.add(_clean_node_name(n))
+			for n in stats.get("measurement_nodes", []) or []:
+				measurement_nodes.add(_clean_node_name(n))
+
+			reservoir_nodes = set()
+			for n in artifacts.get("reservoir_nodes", []) or []:
+				reservoir_nodes.add(_clean_node_name(n))
+			if stats.get("reservoir_node") is not None:
+				reservoir_nodes.add(_clean_node_name(stats.get("reservoir_node")))
+
+			display_nodes = []
+			for i in range(len(actual_phys)):
+				node_name = str(node_mapping.get(str(i), i))
+				if node_name.startswith("meas_"):
+					continue
+				base = _clean_node_name(node_name)
+				if base in reservoir_nodes:
+					continue
+				label = base
+				if base in measurement_nodes:
+					label = f"{label} (M)"
+				if base in reservoir_nodes:
+					label = f"{label}R"
+				display_nodes.append((i, base, label))
+
+			display_nodes.sort(key=lambda t: _node_sort_key(t[1]))
+			display_indices = np.array([t[0] for t in display_nodes], dtype=int)
+			p_labels = [t[2] for t in display_nodes]
+
+			# Clamp known boundary pressures (measurement + reservoir) to ground truth.
+			for idx, node_name in node_mapping.items():
+				i = int(idx)
+				if i >= len(pred_phys) or i >= len(actual_phys):
+					continue
+				base = _clean_node_name(node_name)
+				if base in measurement_nodes or base in reservoir_nodes:
+					pred_phys[i] = actual_phys[i]
+
+			inp_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp")
+			headloss_n = _headloss_n_from_inp(inp_path)
+			from step1_io import load_inp_network
+			network = load_inp_network(inp_path)
+			elev_by_node = {str(nid): float(node.elevation_m) for nid, node in network.nodes.items()}
+			
+			# Apply reservoir head override to actual/predicted pressures for visualization
+			# (matching what _reconstruct_demands does internally)
+			if stats and stats.get("reservoir_head") is not None:
+				res_node_name = str(stats.get("reservoir_node", ""))
+				if res_node_name:
+					node_mapping = artifacts.get("node_mapping", {})
+					# Find the index of the reservoir node
+					node_idx_res = None
+					for idx_str, node_name in node_mapping.items():
+						if str(node_name) == res_node_name:
+							node_idx_res = int(idx_str)
+							break
+					if node_idx_res is not None:
+						# Load network to get elevation
+						node_elev = 0.0
+						if res_node_name in network.nodes:
+							node_elev = float(network.nodes[res_node_name].elevation_m)
+						head_res = float(stats["reservoir_head"])
+						actual_phys[node_idx_res] = head_res - node_elev
+						pred_phys[node_idx_res] = head_res - node_elev
+
+			actual_head = np.array(actual_phys, copy=True)
+			pred_head = np.array(pred_phys, copy=True)
+			for idx_str, node_name in node_mapping.items():
+				i = int(idx_str)
+				if i >= len(actual_head) or i >= len(pred_head):
+					continue
+				elev = elev_by_node.get(_clean_node_name(node_name), 0.0)
+				actual_head[i] += elev
+				pred_head[i] += elev
+
+			res_pressure_text = "n/a"
+			if stats and stats.get("reservoir_head") is not None:
+				res_node = str(stats.get("reservoir_node", ""))
+				if res_node:
+					res_elev = elev_by_node.get(res_node, 0.0)
+					res_pressure = float(stats["reservoir_head"]) - float(res_elev)
+					res_pressure_text = f"{res_pressure:.2f} m"
+			
+			d_pred, d_actual, jn_list = _reconstruct_demands(
+				pred_phys[np.newaxis, :], [dataset[sample_idx]], artifacts, graph, headloss_n, inp_path, stats=stats
+			)
+			if d_pred is None or d_actual is None:
+				raise RuntimeError("Demand reconstruction failed for the example plot.")
+			d_pred = d_pred[0]
+			d_actual = d_actual[0]
+			worst_idx = int(np.argmax(np.abs(d_pred - d_actual)))
+			demand_nodes = [(i, str(jn_list[i])) for i in range(len(jn_list))]
+			demand_nodes.sort(key=lambda t: _node_sort_key(t[1]))
+			demand_order = np.array([t[0] for t in demand_nodes], dtype=int)
+			demand_labels = [t[1] for t in demand_nodes]
+			alpha_values = np.linspace(0.0, 1.0, 21)
+			sweep = []
+			for alpha in alpha_values:
+				mixed = actual_phys + alpha * (pred_phys - actual_phys)
+				mixed_pred, _, _ = _reconstruct_demands(
+					mixed[np.newaxis, :], [dataset[sample_idx]], artifacts, graph, headloss_n, inp_path, stats=stats
+				)
+				sweep.append(float(mixed_pred[0, worst_idx]))
+			return {
+				"pred_phys": pred_phys,
+				"actual_phys": actual_phys,
+				"pred_head": pred_head,
+				"actual_head": actual_head,
+				"reservoir_pressure_text": res_pressure_text,
+				"display_indices": display_indices,
+				"p_labels": p_labels,
+				"d_pred": d_pred,
+				"d_actual": d_actual,
+				"jn_list": jn_list,
+				"demand_order": demand_order,
+				"demand_labels": demand_labels,
+				"worst_idx": worst_idx,
+				"alpha_values": alpha_values,
+				"sweep": np.array(sweep),
+			}
+
+		device = torch.device("cpu")
+		try:
+			model_a = _load_model(model_a_dir, dataset_a[0].x.shape[1])
+			model_b = _load_model(model_b_dir, dataset_b[0].x.shape[1])
+			preds_a_all, actuals_a_all, _ = _run_inference(model_a, dataset_a, device)
+			preds_b_all, actuals_b_all, _ = _run_inference(model_b, dataset_b, device)
+		except Exception as exc:
+			QtWidgets.QMessageBox.critical(self, "Inference Failed", f"Could not prepare sample viewer: {exc}")
+			return
+
+		def _clean_node_name(node_name: str) -> str:
+			s = str(node_name)
+			return s[5:] if s.startswith("meas_") else s
+
+		def _node_sort_key(node_name: str):
+			s = str(node_name)
+			if s.isdigit():
+				return (0, int(s))
+			return (1, s)
+
+		def _physical_nodes_from_mapping(artifacts: dict) -> list[str]:
+			node_mapping = artifacts.get("node_mapping", {})
+			nodes = []
+			seen = set()
+			for idx_str, node_name in sorted(node_mapping.items(), key=lambda kv: int(kv[0])):
+				clean = _clean_node_name(node_name)
+				if str(node_name).startswith("meas_"):
+					continue
+				if clean not in seen:
+					seen.add(clean)
+					nodes.append(clean)
+			return nodes
+
+		def _index_by_physical_node(artifacts: dict) -> dict:
+			node_mapping = artifacts.get("node_mapping", {})
+			idx_by_node = {}
+			for idx_str, node_name in node_mapping.items():
+				if str(node_name).startswith("meas_"):
+					continue
+				clean = _clean_node_name(node_name)
+				if clean not in idx_by_node:
+					idx_by_node[clean] = int(idx_str)
+			return idx_by_node
+
+		def _scenario_ids(actuals_all: np.ndarray, stats: dict, artifacts: dict, dataset: list, nodes: list[str]) -> list[str]:
+			actual_phys_all = _denorm(actuals_all, stats)
+			idx_by_node = _index_by_physical_node(artifacts)
+			valid_nodes = [n for n in nodes if n in idx_by_node]
+			scenario_ids = []
+			for i, row in enumerate(actual_phys_all):
+				payload = {
+					"nodes": valid_nodes,
+					"heads": [round(float(row[idx_by_node[n]]), 8) for n in valid_nodes],
+				}
+				d_field = getattr(dataset[i], "d", None)
+				if d_field is not None:
+					d_vals = d_field.detach().cpu().numpy().reshape(-1)
+					jn_list = [str(x) for x in list(getattr(dataset[i], "junction_names", []) or [])]
+					# Canonicalize demand by node name (not raw tensor order) so IDs remain
+					# stable across datasets with different internal ordering.
+					d_map = {jn: round(float(d_vals[k]), 8) for k, jn in enumerate(jn_list) if k < len(d_vals)}
+					d_nodes_sorted = sorted(d_map.keys(), key=_node_sort_key)
+					payload["d_extra_by_node"] = [(jn, d_map[jn]) for jn in d_nodes_sorted]
+				raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+				scenario_ids.append(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+			return scenario_ids
+
+		shared_count = min(len(dataset_a), len(dataset_b))
+		if shared_count <= 0:
+			QtWidgets.QMessageBox.warning(self, "No Data", "Comparison datasets are empty.")
+			return
+
+		nodes_a = _physical_nodes_from_mapping(artifacts_a)
+		nodes_b = _physical_nodes_from_mapping(artifacts_b)
+		common_nodes = sorted(list(set(nodes_a) & set(nodes_b)), key=_node_sort_key)
+
+		default_pairs = [(i, i) for i in range(shared_count)]
+		strict_pairs = []
+		if common_nodes:
+			from collections import defaultdict, deque
+			ids_a = _scenario_ids(actuals_a_all, stats_a, artifacts_a, dataset_a, common_nodes)
+			ids_b = _scenario_ids(actuals_b_all, stats_b, artifacts_b, dataset_b, common_nodes)
+			by_id_b = defaultdict(deque)
+			for j, sid in enumerate(ids_b):
+				by_id_b[sid].append(j)
+			for i, sid in enumerate(ids_a):
+				if by_id_b[sid]:
+					strict_pairs.append((i, by_id_b[sid].popleft()))
+
+		figure = Figure(figsize=(14, 10), constrained_layout=True)
+
+		current_pairs = default_pairs
+		current_view_idx = 0
+
+		def _render_sample(view_idx: int) -> None:
+			a_sample_idx, b_sample_idx = current_pairs[view_idx]
+			try:
+				example_a = _prepare_example(preds_a_all, actuals_a_all, a_sample_idx, stats_a, artifacts_a, graph_a, dataset_a)
+				example_b = _prepare_example(preds_b_all, actuals_b_all, b_sample_idx, stats_b, artifacts_b, graph_b, dataset_b)
+			except Exception as exc:
+				QtWidgets.QMessageBox.critical(self, "Example Failed", f"Could not build sample pair {view_idx}: {exc}")
+				return
+
+			demand_min = min(
+				float(np.min(example_a["d_actual"])),
+				float(np.min(example_a["d_pred"])),
+				float(np.min(example_b["d_actual"])),
+				float(np.min(example_b["d_pred"])),
+			)
+			demand_max = max(
+				float(np.max(example_a["d_actual"])),
+				float(np.max(example_a["d_pred"])),
+				float(np.max(example_b["d_actual"])),
+				float(np.max(example_b["d_pred"])),
+			)
+			demand_span = demand_max - demand_min
+			demand_pad = 0.05 * demand_span if demand_span > 0 else 0.05
+
+			head_a = np.concatenate(
+				[example_a["actual_head"][example_a["display_indices"]], example_a["pred_head"][example_a["display_indices"]]]
+			)
+			head_b = np.concatenate(
+				[example_b["actual_head"][example_b["display_indices"]], example_b["pred_head"][example_b["display_indices"]]]
+			)
+			head_min = float(min(np.min(head_a), np.min(head_b)))
+			head_max = float(max(np.max(head_a), np.max(head_b)))
+			head_span = head_max - head_min
+			# Deliberately expand head limits so bars look less tall while preserving values.
+			head_pad = 0.25 * head_span if head_span > 0 else 1.0
+
+			figure.clear()
+			axes = figure.subplots(3, 2)
+			models = [("Model A", example_a, model_a_hash), ("Model B", example_b, model_b_hash)]
+			for col, (title, ex, model_hash) in enumerate(models):
+				labels = ex["jn_list"]
+				p_labels = ex["p_labels"]
+				demand_order = ex["demand_order"]
+				demand_labels = ex["demand_labels"]
+				pressure_ax = axes[0, col]
+				demand_ax = axes[1, col]
+				sens_ax = axes[2, col]
+				display_idx = ex["display_indices"]
+				actual_plot = ex["actual_head"][display_idx]
+				pred_plot = ex["pred_head"][display_idx]
+				d_actual_plot = ex["d_actual"][demand_order]
+				d_pred_plot = ex["d_pred"][demand_order]
+				p_idx = np.arange(len(actual_plot))
+				d_idx = np.arange(len(d_actual_plot))
+				width = 0.35
+
+				pressure_ax.bar(p_idx - width / 2, actual_plot, width=width, label="Actual", color="#4C78A8")
+				pressure_ax.bar(p_idx + width / 2, pred_plot, width=width, label="Predicted", color="#F58518")
+				y_offset = 0.03 * (head_max - head_min + 2.0 * head_pad)
+				for x, a_val, p_val in zip(p_idx, actual_plot, pred_plot):
+					diff = float(a_val - p_val)
+					y_text = max(float(a_val), float(p_val)) + y_offset
+					pressure_ax.text(x, y_text, f"{diff:+.2f}", ha="center", va="bottom", fontsize=7, rotation=90)
+				pressure_ax.set_title(f"{title}: heads (node labels)")
+				pressure_ax.set_xticks(p_idx)
+				pressure_ax.set_xticklabels(p_labels, fontsize=8)
+				pressure_ax.set_ylabel("head [m]")
+				pressure_ax.set_ylim(head_min - head_pad, head_max + head_pad)
+				pressure_ax.text(
+					0.99,
+					0.98,
+					f"Reservoir pressure: {ex['reservoir_pressure_text']}",
+					transform=pressure_ax.transAxes,
+					ha="right",
+					va="top",
+					fontsize=8,
+					bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8, edgecolor="#BBBBBB"),
+				)
+				pressure_ax.grid(True, axis="y", alpha=0.25)
+				if col == 0:
+					pressure_ax.legend(fontsize=8)
+
+				demand_ax.bar(d_idx - width / 2, d_actual_plot, width=width, label="Actual", color="#54A24B")
+				demand_ax.bar(d_idx + width / 2, d_pred_plot, width=width, label="Reconstructed", color="#E45756")
+				worst_label = demand_labels[int(np.argmax(np.abs(d_pred_plot - d_actual_plot)))]
+				demand_ax.set_title(f"{title}: demand (worst junction {worst_label})")
+				demand_ax.set_xticks(d_idx)
+				demand_ax.set_xticklabels(demand_labels, fontsize=8)
+				demand_ax.set_ylabel("m³/s")
+				demand_ax.set_ylim(demand_min - demand_pad, demand_max + demand_pad)
+				demand_ax.grid(True, axis="y", alpha=0.25)
+				if col == 0:
+					demand_ax.legend(fontsize=8)
+
+				sens_ax.plot(ex["alpha_values"], ex["sweep"], color="#7F3C8D", lw=2)
+				sens_ax.scatter([0, 1], [ex["d_actual"][ex["worst_idx"]], ex["d_pred"][ex["worst_idx"]]], color=["#54A24B", "#E45756"], zorder=3)
+				sens_ax.set_title(f"{title}: sensitivity to pressure interpolation")
+				sens_ax.set_xlabel("alpha = actual -> predicted")
+				sens_ax.set_ylabel(f"Demand at junction {labels[ex['worst_idx']]}")
+				sens_ax.grid(True, alpha=0.25)
+				metrics_text = (
+					f"head MAE={float(np.mean(np.abs(pred_plot - actual_plot))):.2f} m\n"
+					f"demand MAE={float(np.mean(np.abs(ex['d_pred'] - ex['d_actual']))):.3f} m³/s"
+				)
+				sens_ax.text(0.02, 0.98, metrics_text, transform=sens_ax.transAxes, va="top", ha="left", fontsize=8,
+					bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, edgecolor="#BBBBBB"))
+
+			mode_text = "strict fair" if strict_mode_check.isChecked() else "same index"
+			figure.suptitle(
+				f"Pressure-demand example: {mode_text} | view {view_idx} (A:{a_sample_idx}, B:{b_sample_idx})",
+				fontsize=13,
+			)
+			view_label.setText(f"Scenario {view_idx + 1} / {len(current_pairs)}")
+			canvas.draw_idle()
+		dialog = QtWidgets.QDialog(self)
+		dialog.setWindowTitle("Pressure-Demand Example")
+		dialog.resize(1400, 1000)
+		layout = QtWidgets.QVBoxLayout(dialog)
+		caption = QtWidgets.QLabel(
+			"Use Left/Right to browse scenarios. Head labels above bars are (actual - predicted) in meters. "
+			"Measurement and reservoir nodes are clamped to ground truth, and meas_* pseudo nodes are ignored in pressure plots."
+		)
+		caption.setWordWrap(True)
+		layout.addWidget(caption)
+		canvas = FigureCanvas(figure)
+		layout.addWidget(canvas, 1)
+
+		nav_row = QtWidgets.QHBoxLayout()
+		prev_button = QtWidgets.QPushButton("Left")
+		next_button = QtWidgets.QPushButton("Right")
+		view_label = QtWidgets.QLabel("")
+		strict_mode_check = QtWidgets.QCheckBox("Strict fair mode (match identical ground-truth scenarios)")
+		strict_mode_check.setChecked(bool(strict_pairs))
+		strict_mode_check.setEnabled(bool(strict_pairs))
+		strict_mode_status = QtWidgets.QLabel("")
+		nav_row.addWidget(prev_button)
+		nav_row.addWidget(next_button)
+		nav_row.addWidget(view_label)
+		nav_row.addStretch(1)
+		nav_row.addWidget(strict_mode_check)
+		nav_row.addWidget(strict_mode_status)
+		layout.addLayout(nav_row)
+
+		if not strict_pairs:
+			strict_mode_check.setToolTip("No exact cross-dataset ground-truth matches found; falling back to same-index mode.")
+			strict_mode_status.setText("Unavailable")
+			strict_mode_status.setStyleSheet("color: #B85042;")
+		else:
+			strict_mode_status.setText(f"{len(strict_pairs)} matched scenarios")
+			strict_mode_status.setStyleSheet("color: #3C7A3C;")
+
+		def _set_mode() -> None:
+			nonlocal current_pairs, current_view_idx
+			current_pairs = strict_pairs if (strict_mode_check.isChecked() and strict_pairs) else default_pairs
+			current_view_idx = 0
+			_render_sample(current_view_idx)
+
+		def _step(delta: int) -> None:
+			nonlocal current_view_idx
+			if not current_pairs:
+				return
+			current_view_idx = (current_view_idx + delta) % len(current_pairs)
+			_render_sample(current_view_idx)
+
+		strict_mode_check.toggled.connect(lambda _: _set_mode())
+		prev_button.clicked.connect(lambda: _step(-1))
+		next_button.clicked.connect(lambda: _step(1))
+		_set_mode()
+
+		buttons = QtWidgets.QHBoxLayout()
+		buttons.addStretch(1)
+		close_button = QtWidgets.QPushButton("Close")
+		close_button.clicked.connect(dialog.close)
+		buttons.addWidget(close_button)
+		layout.addLayout(buttons)
+		dialog.exec()
+
+	def _gnn_export_results(self) -> None:
+		if not self._gnn_results:
+			return
+		path, _ = QtWidgets.QFileDialog.getSaveFileName(
+			self, "Export Results", "gnn_comparison.json", "JSON Files (*.json);;All Files (*)"
+		)
+		if path:
+			with open(path, "w", encoding="utf-8") as f:
+				json.dump(self._gnn_results, f, indent=2)
+
 	def _on_tab_changed(self, index: int) -> None:
 		on_ls = index == self._ls_tab_index
 		self.comparison_mode_check.setEnabled(not on_ls)
@@ -1316,6 +2824,11 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.solver_params.wdn = self.scenario_params.wdn
 		if not self._updating_measurement_text:
 			self._measurement_text_changed(self.measurement_list.text())
+		if hasattr(self, "gnn_default_nodes_label"):
+			default_nodes = self._gnn_default_nodes()
+			self.gnn_default_nodes_label.setText(", ".join(default_nodes) if default_nodes else "(none)")
+			self._gnn_refresh_dataset_status()
+			self._gnn_populate_model_combos()
 
 	def _load_network(self) -> None:
 		wdn = self.wdn_input.currentText().strip()
@@ -1427,6 +2940,9 @@ class MainWindow(QtWidgets.QMainWindow):
 				"PIPE_BOUND_PERTURB_SEED": self.pipe_bound_seed.value(),
 				"PIPE_BOUND_PERTURB_FIX_TOTAL": self.pipe_bound_fix_total.isChecked(),
 				"PIPE_BOUND_PERTURB_BASE": self.pipe_bound_base.currentText(),
+				"DIRICHLET_EXTRA_DEMAND": self.dirichlet_extra_demand.value(),
+				"DIRICHLET_SAMPLES": self.dirichlet_samples.value(),
+				"DIRICHLET_SEED": self.dirichlet_seed.value(),
 			}
 		)
 		return payload
@@ -1505,6 +3021,8 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.status_bar.showMessage("Solver not started: invalid measurement input.")
 			return
 
+		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
+		_sync_wdn_index(wdn)
 		payload_a = self._solver_payload_from_widget(self.model_a)
 		scenario_path = str(payload_a.get("SCENARIO_FILE", ""))
 		if not scenario_path or not os.path.exists(scenario_path):
@@ -1603,6 +3121,8 @@ class MainWindow(QtWidgets.QMainWindow):
 				solver_hash = str(payload.get("SOLVER_HASH", ""))
 				index[solver_hash] = output_dir
 				save_index(index_path, index, ROOT_DIR)
+			solver_hash = str(payload.get("SOLVER_HASH", ""))
+			_write_gui_hash(resolvedout, solver_hash)
 			self.status_bar.showMessage(f"Run {label} done: {output_dir}")
 		else:
 			output_dir = ""

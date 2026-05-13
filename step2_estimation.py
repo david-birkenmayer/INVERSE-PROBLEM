@@ -336,6 +336,156 @@ def simulate_single_random_scenario(
     return demands, heads, flows
 
 
+def simulate_dirichlet_demand_scenarios(
+    inp_path: str,
+    n_scenarios: int,
+    extra_demand: float,
+    seed: Optional[int] = 1,
+    simulator: str = "auto",
+) -> Dict[str, np.ndarray]:
+    """
+    Simulate demand scenarios using the Dirichlet extra-demand model from the GNN pipeline.
+
+    Each scenario draws alpha ~ Dirichlet(1, ..., 1) and sets:
+        d_j = d_j_base + alpha_j * extra_demand
+
+    Total demand per scenario is fixed: sum(d_j_base) + extra_demand.
+    All junctions receive a strictly positive share of extra_demand.
+
+    Returns: {pipe_id: np.ndarray(shape=(n_scenarios,))}
+    """
+    _require_wntr()
+    import wntr
+
+    rng = np.random.default_rng(seed)
+    wn = wntr.network.WaterNetworkModel(inp_path)
+
+    junction_names = [name for name, _ in wn.junctions()]
+    n_junctions = len(junction_names)
+
+    base_demands: Dict[str, float] = {}
+    for name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            base_demands[name] = 0.0
+        else:
+            base_demands[name] = float(node.demand_timeseries_list[0].base_value or 0.0)
+
+    flows_by_pipe: Dict[str, np.ndarray] = {
+        pipe_name: np.zeros(n_scenarios, dtype=float) for pipe_name, _ in wn.pipes()
+    }
+
+    if simulator == "auto":
+        try:
+            sim = wntr.sim.EpanetSimulator(wn)
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+    elif simulator == "epanet":
+        sim = wntr.sim.EpanetSimulator(wn)
+    elif simulator == "wntr":
+        sim = wntr.sim.WNTRSimulator(wn)
+    else:
+        raise ValueError("simulator must be 'auto', 'epanet', or 'wntr'.")
+
+    alpha = np.ones(n_junctions)
+    for i in range(n_scenarios):
+        shares = rng.dirichlet(alpha)
+        for j, junc_name in enumerate(junction_names):
+            node = wn.get_node(junc_name)
+            if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+                continue
+            node.demand_timeseries_list[0].base_value = (
+                base_demands[junc_name] + float(shares[j]) * extra_demand
+            )
+
+        try:
+            results = sim.run_sim()
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+            results = sim.run_sim()
+
+        flow_df = results.link["flowrate"]
+        t0 = flow_df.index[0]
+        for pipe_name in flows_by_pipe:
+            flows_by_pipe[pipe_name][i] = float(flow_df.loc[t0, pipe_name])
+
+    for junc_name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            continue
+        node.demand_timeseries_list[0].base_value = base_demands[junc_name]
+
+    return flows_by_pipe
+
+
+def simulate_single_dirichlet_scenario(
+    inp_path: str,
+    extra_demand: float,
+    seed: Optional[int] = 1,
+    simulator: str = "auto",
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+    """
+    Simulate one scenario using the Dirichlet extra-demand model.
+
+    Draws alpha ~ Dirichlet(1, ..., 1) and sets:
+        d_j = d_j_base + alpha_j * extra_demand
+
+    Returns: (demands, heads, flows)
+    """
+    _require_wntr()
+    import wntr
+
+    rng = np.random.default_rng(seed)
+    wn = wntr.network.WaterNetworkModel(inp_path)
+
+    junction_names = [name for name, _ in wn.junctions()]
+    n_junctions = len(junction_names)
+
+    base_demands: Dict[str, float] = {}
+    for name, node in wn.junctions():
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            base_demands[name] = 0.0
+        else:
+            base_demands[name] = float(node.demand_timeseries_list[0].base_value or 0.0)
+
+    alpha = np.ones(n_junctions)
+    shares = rng.dirichlet(alpha)
+
+    demands: Dict[str, float] = {}
+    for j, junc_name in enumerate(junction_names):
+        node = wn.get_node(junc_name)
+        if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
+            demands[junc_name] = 0.0
+            continue
+        new_demand = base_demands[junc_name] + float(shares[j]) * extra_demand
+        node.demand_timeseries_list[0].base_value = new_demand
+        demands[junc_name] = new_demand
+
+    if simulator == "auto":
+        try:
+            sim = wntr.sim.EpanetSimulator(wn)
+        except Exception:
+            sim = wntr.sim.WNTRSimulator(wn)
+    elif simulator == "epanet":
+        sim = wntr.sim.EpanetSimulator(wn)
+    elif simulator == "wntr":
+        sim = wntr.sim.WNTRSimulator(wn)
+    else:
+        raise ValueError("simulator must be 'auto', 'epanet', or 'wntr'.")
+
+    try:
+        results = sim.run_sim()
+    except Exception:
+        sim = wntr.sim.WNTRSimulator(wn)
+        results = sim.run_sim()
+
+    flow_df = results.link["flowrate"]
+    head_df = results.node["head"]
+    t0 = flow_df.index[0]
+
+    flows = {pipe_name: float(flow_df.loc[t0, pipe_name]) for pipe_name in flow_df.columns}
+    heads = {node_name: float(head_df.loc[t0, node_name]) for node_name in head_df.columns}
+    return demands, heads, flows
+
+
 def estimate_capacity_bounds(
     network: NetworkData,
     pipe_set_primary: Iterable[str],

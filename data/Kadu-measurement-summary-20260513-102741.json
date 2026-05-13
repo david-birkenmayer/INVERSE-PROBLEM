@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "14",
+        "19",
+        "24",
+        "3"
+      ],
+      "min_demand_viol": 5.435713554369319e-08,
+      "objective": 0.0006431671838391432,
+      "output_dir": "data/Kadu/0e489769",
+      "radius": 0.025360740995466657,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}
