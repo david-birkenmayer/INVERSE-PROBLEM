@@ -1,0 +1,82 @@
+{
+  "results": [
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "1"
+      ],
+      "min_demand_viol": -1.3062918532880015e-07,
+      "objective": 3.7429296030479486,
+      "output_dir": "data/Alperovits/d36d7ed0/1",
+      "radius": 1.9346652431487854,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "5"
+      ],
+      "min_demand_viol": -5.16059464133022e-07,
+      "objective": 3.9233238793832204,
+      "output_dir": "data/Alperovits/d36d7ed0/5",
+      "radius": 1.980738215762805,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "3"
+      ],
+      "min_demand_viol": -5.547175777321768e-07,
+      "objective": 3.9233325783282025,
+      "output_dir": "data/Alperovits/d36d7ed0/3",
+      "radius": 1.9807404116461609,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "6"
+      ],
+      "min_demand_viol": -3.510632051441078e-07,
+      "objective": 3.9542906857241196,
+      "output_dir": "data/Alperovits/d36d7ed0/6",
+      "radius": 1.988539837600474,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "4"
+      ],
+      "min_demand_viol": -1.1886878189992696e-07,
+      "objective": 3.95467959438988,
+      "output_dir": "data/Alperovits/d36d7ed0/4",
+      "radius": 1.9886376226929532,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    },
+    {
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_sites": [
+        "2"
+      ],
+      "min_demand_viol": -6.888362717717413e-07,
+      "objective": 4.032768005980201,
+      "output_dir": "data/Alperovits/d36d7ed0/2",
+      "radius": 2.0081752926426026,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}

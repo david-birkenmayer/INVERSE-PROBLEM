@@ -1,0 +1,12 @@
+{
+  "artifact_type": "comparison",
+  "created_at": "2026-05-19T16:00:40.511367+00:00",
+  "hash": "833f09d1d5d3847c22a8346a673b1003e1f37a0ce7d35f355daa7c208b0ceb97",
+  "inputs": {
+    "comparison_mode": "shared_testset_per_model_measurements_v1",
+    "demand_reconstruction": "algebraic",
+    "model_a_hash": "ad443c242debdedfc98621929db07566df6729c79c9626e95a6a1f19a2d07d78",
+    "model_b_hash": "ff570e205c5d48f9d744145a2c611a67f0bf77ce1e7bd0592d506e8c7a462439",
+    "test_hash": "07ec915f090d249210d5e13b976481e94977fbb45f031f096188716a87fe44a3"
+  }
+}
