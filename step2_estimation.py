@@ -340,6 +340,8 @@ def simulate_dirichlet_demand_scenarios(
     inp_path: str,
     n_scenarios: int,
     extra_demand: float,
+    min_deviation: float = 1.0,
+    max_deviation: float = 1.0,
     seed: Optional[int] = 1,
     simulator: str = "auto",
 ) -> Dict[str, np.ndarray]:
@@ -347,15 +349,21 @@ def simulate_dirichlet_demand_scenarios(
     Simulate demand scenarios using the Dirichlet extra-demand model from the GNN pipeline.
 
     Each scenario draws alpha ~ Dirichlet(1, ..., 1) and sets:
-        d_j = d_j_base + alpha_j * extra_demand
+        d_j = d_j_base + alpha_j * (deviation_factor * extra_demand)
+    where deviation_factor ~ Uniform(min_deviation, max_deviation).
 
-    Total demand per scenario is fixed: sum(d_j_base) + extra_demand.
-    All junctions receive a strictly positive share of extra_demand.
+    Total demand per scenario lies in:
+        [sum(d_j_base) + min_deviation * extra_demand,
+         sum(d_j_base) + max_deviation * extra_demand]
+    (for min_deviation <= max_deviation).
 
     Returns: {pipe_id: np.ndarray(shape=(n_scenarios,))}
     """
     _require_wntr()
     import wntr
+
+    if min_deviation > max_deviation:
+        raise ValueError("min_deviation must be <= max_deviation.")
 
     rng = np.random.default_rng(seed)
     wn = wntr.network.WaterNetworkModel(inp_path)
@@ -388,13 +396,15 @@ def simulate_dirichlet_demand_scenarios(
 
     alpha = np.ones(n_junctions)
     for i in range(n_scenarios):
+        deviation_factor = float(rng.uniform(min_deviation, max_deviation))
+        total_extra = deviation_factor * float(extra_demand)
         shares = rng.dirichlet(alpha)
         for j, junc_name in enumerate(junction_names):
             node = wn.get_node(junc_name)
             if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
                 continue
             node.demand_timeseries_list[0].base_value = (
-                base_demands[junc_name] + float(shares[j]) * extra_demand
+                base_demands[junc_name] + float(shares[j]) * total_extra
             )
 
         try:
@@ -419,6 +429,8 @@ def simulate_dirichlet_demand_scenarios(
 def simulate_single_dirichlet_scenario(
     inp_path: str,
     extra_demand: float,
+    min_deviation: float = 1.0,
+    max_deviation: float = 1.0,
     seed: Optional[int] = 1,
     simulator: str = "auto",
 ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
@@ -426,12 +438,16 @@ def simulate_single_dirichlet_scenario(
     Simulate one scenario using the Dirichlet extra-demand model.
 
     Draws alpha ~ Dirichlet(1, ..., 1) and sets:
-        d_j = d_j_base + alpha_j * extra_demand
+        d_j = d_j_base + alpha_j * (deviation_factor * extra_demand)
+    where deviation_factor ~ Uniform(min_deviation, max_deviation).
 
     Returns: (demands, heads, flows)
     """
     _require_wntr()
     import wntr
+
+    if min_deviation > max_deviation:
+        raise ValueError("min_deviation must be <= max_deviation.")
 
     rng = np.random.default_rng(seed)
     wn = wntr.network.WaterNetworkModel(inp_path)
@@ -447,6 +463,8 @@ def simulate_single_dirichlet_scenario(
             base_demands[name] = float(node.demand_timeseries_list[0].base_value or 0.0)
 
     alpha = np.ones(n_junctions)
+    deviation_factor = float(rng.uniform(min_deviation, max_deviation))
+    total_extra = deviation_factor * float(extra_demand)
     shares = rng.dirichlet(alpha)
 
     demands: Dict[str, float] = {}
@@ -455,7 +473,7 @@ def simulate_single_dirichlet_scenario(
         if node.demand_timeseries_list is None or len(node.demand_timeseries_list) == 0:
             demands[junc_name] = 0.0
             continue
-        new_demand = base_demands[junc_name] + float(shares[j]) * extra_demand
+        new_demand = base_demands[junc_name] + float(shares[j]) * total_extra
         node.demand_timeseries_list[0].base_value = new_demand
         demands[junc_name] = new_demand
 

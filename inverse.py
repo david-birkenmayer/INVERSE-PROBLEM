@@ -799,6 +799,11 @@ def main() -> None:
 							head_margin=HEXALY_HEAD_MARGIN,
 							use_path_head_bounds=HEXALY_USE_PATH_HEAD_BOUNDS,
 						)
+			elif solver_mode == "Hexaly_xd_chebyshev":
+				raise ValueError(
+					"SOLVER='Hexaly_xd_chebyshev' is disabled: the current single-level NLP uses an optimistic "
+					"min_{c,d} distance form and does not represent worst-case class ambiguity. Use SOLVER='Hexaly_xd'."
+				)
 			else:
 				raise ValueError(f"Unsupported SOLVER: {solver_mode}")
 			diffs = []

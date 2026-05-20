@@ -17,6 +17,8 @@ class ScenarioParams:
 	pipe_bound_perturb_fix_total: bool = True
 	pipe_bound_perturb_base: str = "base"
 	dirichlet_extra_demand: float = 1.0
+	dirichlet_min_deviation: float = 1.0
+	dirichlet_max_deviation: float = 1.0
 	dirichlet_samples: int = 200
 	dirichlet_seed: int = 1
 

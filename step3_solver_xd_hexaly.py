@@ -809,3 +809,236 @@ def solve_max_demand_distance_xd_hexaly_fixed_reference(
         solver_status=status_msg,
         best_bound=best_bound,
     )
+
+
+def solve_chebyshev_radius_xd_hexaly(
+    network: NetworkData,
+    sensor_heads: Dict[str, float],
+    pipe_resistances: Dict[str, float],
+    c_bounds: Optional[Dict[str, float]] = None,
+    C_bounds: Optional[Dict[str, float]] = None,
+    reservoir_node: Optional[str] = None,
+    reservoir_head: Optional[float] = None,
+    reservoir_outflow: Optional[float] = None,
+    initial_guess: Optional[SolverResult] = None,
+    norm_p: float = 2.0,
+    demand_lb: float = 0.0,
+    total_demand: Optional[float] = None,
+    measurement_nodes: Optional[Iterable[str]] = None,
+    measurement_heads_equal_only: bool = True,
+    headloss_n: float = 2.0,
+    cycle_basis_mode: str = "graph",
+    license_path: Optional[str] = None,
+    time_limit: Optional[int] = None,
+    seed: Optional[int] = None,
+    verbosity: Optional[int] = None,
+) -> DemandDistanceResult:
+    """
+    Chebyshev radius solver using Hexaly.
+    
+    Finds a center demand c and minimizes the worst-case distance to any feasible demand d
+    that gives the same measurement results as c.
+    
+    The problem is formulated as:
+        minimize r
+        subject to:
+            - Both c and d are hydraulically feasible
+            - For all measurement nodes m: head_m(c) = head_m(d)
+            - For all junctions j: ||d_j - c_j||_p <= r
+            - Standard demand bounds and total demand constraints apply to both
+    
+    Returns: DemandDistanceResult where:
+        - demands_a: the optimized center demand c
+        - demands_b: the worst-case demand d in c's equivalence class
+        - objective: the Chebyshev radius r
+    """
+    _require_hexaly()
+    import hexaly.optimizer as hx
+
+    if license_path:
+        hx.version.license_path = license_path
+
+    if not measurement_heads_equal_only:
+        raise ValueError("Chebyshev radius solver currently supports equality-only measurement mode.")
+
+    measurement_set = set(measurement_nodes or [])
+    reservoir_nodes = set(network.reservoirs.keys())
+    junctions, pipes = _build_index_maps(network, reservoir_nodes)
+
+    flow_bounds = _estimate_flow_bounds(pipes, c_bounds, C_bounds, initial_guess)
+    x_bounds = _flow_to_head_bounds(pipe_resistances, flow_bounds, headloss_n)
+
+    cycle_rows = _build_cycle_matrix(network, pipes, mode=cycle_basis_mode)
+    path_rows = []
+    if reservoir_node is not None and measurement_set:
+        path_rows = _build_path_matrix(
+            network,
+            pipes,
+            pipe_resistances,
+            reservoir_node,
+            measurement_set,
+        )
+
+    with hx.HexalyOptimizer() as optimizer:
+        m = optimizer.model
+
+        # Variables for center demand c
+        qC = {p: m.float(flow_bounds[p][0], flow_bounds[p][1]) for p in pipes}
+        xC = {p: m.float(x_bounds[p][0], x_bounds[p][1]) for p in pipes}
+
+        # Variables for worst-case demand d in equivalence class of c
+        qD = {p: m.float(flow_bounds[p][0], flow_bounds[p][1]) for p in pipes}
+        xD = {p: m.float(x_bounds[p][0], x_bounds[p][1]) for p in pipes}
+
+        # Head loss relationships for both c and d
+        for p in pipes:
+            r_e = pipe_resistances[p]
+            m.constraint(xC[p] == r_e * qC[p] * m.pow(m.abs(qC[p]), headloss_n - 1.0))
+            m.constraint(xD[p] == r_e * qD[p] * m.pow(m.abs(qD[p]), headloss_n - 1.0))
+
+        # Cycle basis constraints (loop constraints) for both c and d
+        for row in cycle_rows:
+            m.constraint(_sum_expr(m, [coef * xC[p] for p, coef in row.items()]) == 0.0)
+            m.constraint(_sum_expr(m, [coef * xD[p] for p, coef in row.items()]) == 0.0)
+
+        # Path constraints for both c and d (measurement node consistency)
+        for row in path_rows:
+            expr_c = _sum_expr(m, [coef * xC[p] for p, coef in row.items()])
+            expr_d = _sum_expr(m, [coef * xD[p] for p, coef in row.items()])
+            # Measurement node consistency: c and d must give same measurement
+            m.constraint(expr_c == expr_d)
+
+        # Demand balance and bounds for center c
+        dC = {}
+        for j in junctions:
+            inflow = []
+            outflow = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.end_node == j:
+                    inflow.append(qC[p])
+                if pipe.start_node == j:
+                    outflow.append(qC[p])
+            dC[j] = _sum_expr(m, inflow) - _sum_expr(m, outflow)
+            m.constraint(dC[j] >= demand_lb)
+
+        # Demand balance and bounds for worst-case demand d
+        dD = {}
+        for j in junctions:
+            inflow = []
+            outflow = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.end_node == j:
+                    inflow.append(qD[p])
+                if pipe.start_node == j:
+                    outflow.append(qD[p])
+            dD[j] = _sum_expr(m, inflow) - _sum_expr(m, outflow)
+            m.constraint(dD[j] >= demand_lb)
+
+        # Total demand constraints (both c and d satisfy the same total demand)
+        if total_demand is not None:
+            m.constraint(_sum_expr(m, list(dC.values())) == float(total_demand))
+            m.constraint(_sum_expr(m, list(dD.values())) == float(total_demand))
+
+        # Reservoir outflow constraints
+        if reservoir_node is not None and reservoir_outflow is not None:
+            net_c = []
+            net_d = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.start_node == reservoir_node:
+                    net_c.append(qC[p])
+                    net_d.append(qD[p])
+                if pipe.end_node == reservoir_node:
+                    net_c.append(-qC[p])
+                    net_d.append(-qD[p])
+            m.constraint(_sum_expr(m, net_c) == float(reservoir_outflow))
+            m.constraint(_sum_expr(m, net_d) == float(reservoir_outflow))
+
+        # Chebyshev radius variable and constraints
+        # r = max_j ||d_j - c_j||_p
+        if math.isinf(norm_p):
+            # L-infinity norm: r = max_j |d_j - c_j|
+            r_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0
+            r = m.float(0.0, 10.0 * r_ub)
+            for j in junctions:
+                m.constraint(r >= m.abs(dD[j] - dC[j]))
+            obj_expr = r
+        else:
+            # L-p norm: r = (sum_j |d_j - c_j|^p)^(1/p)
+            # Equivalently, minimize r where sum_j |d_j - c_j|^p <= r^p
+            if norm_p <= 0:
+                raise ValueError("norm_p must be positive.")
+            power = float(norm_p)
+            r_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0
+            r = m.float(0.0, 10.0 * r_ub)
+            terms = [m.pow(m.abs(dD[j] - dC[j]), power) for j in junctions]
+            m.constraint(_sum_expr(m, terms) <= m.pow(r, power))
+            obj_expr = r
+
+        m.minimize(obj_expr)
+        m.close()
+
+        if time_limit is not None:
+            optimizer.param.time_limit = int(time_limit)
+        if seed is not None:
+            optimizer.param.seed = int(seed)
+        if verbosity is not None:
+            optimizer.param.verbosity = int(verbosity)
+
+        optimizer.solve()
+        status = optimizer.solution.status
+        success = status in {hx.HxSolutionStatus.FEASIBLE, hx.HxSolutionStatus.OPTIMAL}
+        best_bound = None
+        try:
+            best_bound = getattr(optimizer.solution, "best_bound", None)
+        except Exception:
+            best_bound = None
+
+        q_c = {p: float(qC[p].value) for p in pipes}
+        x_c = {p: float(xC[p].value) for p in pipes}
+        d_c = {j: float(dC[j].value) for j in junctions}
+
+        q_d = {p: float(qD[p].value) for p in pipes}
+        x_d = {p: float(xD[p].value) for p in pipes}
+        d_d = {j: float(dD[j].value) for j in junctions}
+
+    heads_c = _compute_heads_from_x(
+        network,
+        pipes,
+        x_c,
+        pipe_resistances,
+        reservoir_node,
+        reservoir_head,
+    )
+    heads_d = _compute_heads_from_x(
+        network,
+        pipes,
+        x_d,
+        pipe_resistances,
+        reservoir_node,
+        reservoir_head,
+    )
+
+    min_demand_viol = 0.0
+    if d_c or d_d:
+        min_demand_viol = min(min(d_c.values()), min(d_d.values())) - demand_lb
+
+    objective_val = _compute_objective_value(d_c, d_d, norm_p)
+    status_msg = str(status)
+
+    return DemandDistanceResult(
+        demands_a=d_c,
+        demands_b=d_d,
+        heads_a=heads_c,
+        heads_b=heads_d,
+        flows_a=q_c,
+        flows_b=q_d,
+        max_violation=0.0,
+        min_demand_viol=float(min_demand_viol),
+        success=bool(success),
+        objective=objective_val,
+        solver_status=status_msg,
+        best_bound=best_bound,
+    )

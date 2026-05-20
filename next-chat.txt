@@ -1,0 +1,5 @@
+The issue for this solver is, that the increase in accuracy is not worth the runtime cost in practive. I would assume that the chebyshef radius is roughly equal to half the worst-case radius most of the time.
+
+If we are already given a specific measurement, then we don't need the outer supremum and the result is actually very meaningful. I see this useful in two cases:
+a) We could run the max-radius first to determine the measurement and then run the chebyshef after with this fixed scenario
+b) We can compare the predicted value c and compare against the GNN results!

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from datetime import datetime
+import numpy as np
 
 from step1_io import load_inp_network
 from step2_estimation import (
@@ -19,7 +20,7 @@ from step2_estimation import (
 ### NETWORK AND SCENARIO
 WDN = "Alperovits"
 SCENARIO_NAME = "Alperovits-base"
-SCENARIO_SOURCE = "base"  # "base" or "random"
+SCENARIO_SOURCE = "base"  # "base", "random", or "dirichlet"
 
 
 ### PIPE BOUNDS
@@ -27,6 +28,8 @@ PIPE_BOUNDS = True
 PIPE_BOUND_SAFENESS = 0.85  # in [0, 1], higher means looser bounds
 PIPE_BOUND_METHOD = "perturb"  # "montecarlo", "perturb", or "dirichlet"
 DIRICHLET_EXTRA_DEMAND = 1.0  # total extra demand (L/s) added via Dirichlet; also used for SCENARIO_SOURCE="dirichlet"
+DIRICHLET_MIN_DEVIATION = 1.0  # sample deviation factor in [min, max]
+DIRICHLET_MAX_DEVIATION = 1.0
 DIRICHLET_SAMPLES = 200
 DIRICHLET_SEED = 1
 PIPE_BOUND_POLICY = "minmax"  # "minmax" or "quantile"
@@ -119,6 +122,8 @@ def _apply_config(config: Dict[str, object]) -> None:
 		"PIPE_BOUND_PERTURB_FIX_TOTAL",
 		"PIPE_BOUND_PERTURB_BASE",
 		"DIRICHLET_EXTRA_DEMAND",
+		"DIRICHLET_MIN_DEVIATION",
+		"DIRICHLET_MAX_DEVIATION",
 		"DIRICHLET_SAMPLES",
 		"DIRICHLET_SEED",
 	}
@@ -138,6 +143,9 @@ def main() -> None:
 		_apply_config(config)
 	else:
 		config = {}
+
+	if DIRICHLET_MIN_DEVIATION > DIRICHLET_MAX_DEVIATION:
+		raise ValueError("DIRICHLET_MIN_DEVIATION must be <= DIRICHLET_MAX_DEVIATION.")
 
 	inp_path = f"./wdn/{WDN}.inp"
 	network = load_inp_network(inp_path)
@@ -187,6 +195,8 @@ def main() -> None:
 				inp_path=inp_path,
 				n_scenarios=DIRICHLET_SAMPLES,
 				extra_demand=DIRICHLET_EXTRA_DEMAND,
+				min_deviation=DIRICHLET_MIN_DEVIATION,
+				max_deviation=DIRICHLET_MAX_DEVIATION,
 				seed=DIRICHLET_SEED,
 				simulator="auto",
 			)
@@ -221,6 +231,8 @@ def main() -> None:
 		scenario_demands_pos, scenario_heads, scenario_flows = simulate_single_dirichlet_scenario(
 			inp_path=inp_path,
 			extra_demand=DIRICHLET_EXTRA_DEMAND,
+			min_deviation=DIRICHLET_MIN_DEVIATION,
+			max_deviation=DIRICHLET_MAX_DEVIATION,
 			seed=2,
 			simulator="auto",
 		)
@@ -254,8 +266,19 @@ def main() -> None:
 			"PIPE_BOUND_PERTURB_FIX_TOTAL": PIPE_BOUND_PERTURB_FIX_TOTAL,
 			"PIPE_BOUND_PERTURB_BASE": PIPE_BOUND_PERTURB_BASE,
 			"DIRICHLET_EXTRA_DEMAND": DIRICHLET_EXTRA_DEMAND,
+			"DIRICHLET_MIN_DEVIATION": DIRICHLET_MIN_DEVIATION,
+			"DIRICHLET_MAX_DEVIATION": DIRICHLET_MAX_DEVIATION,
 			"DIRICHLET_SAMPLES": DIRICHLET_SAMPLES,
 			"DIRICHLET_SEED": DIRICHLET_SEED,
+		},
+		"dirichlet_params": {
+			"extra_demand": DIRICHLET_EXTRA_DEMAND,
+			"min_deviation": DIRICHLET_MIN_DEVIATION,
+			"max_deviation": DIRICHLET_MAX_DEVIATION,
+		},
+		"total_demand_interval": {
+			"min": float(sum(n.base_demand for n in network.junctions.values()) + DIRICHLET_MIN_DEVIATION * DIRICHLET_EXTRA_DEMAND),
+			"max": float(sum(n.base_demand for n in network.junctions.values()) + DIRICHLET_MAX_DEVIATION * DIRICHLET_EXTRA_DEMAND),
 		},
 		"timestamp": timestamp,
 		"scenario_demands": scenario_demands,

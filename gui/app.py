@@ -520,8 +520,9 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 	def _update_visibility(self) -> None:
 		solver = self.solver_mode.currentText()
 		restriction = self.restriction_mode.currentText()
+		is_xd_solver = solver == "Hexaly_xd"
 		for key in ["check_xd_base", "check_xd_cycle", "xd_cycle_basis", "skip_feasibility", "fixed_reference"]:
-			self._set_row_visible(key, solver == "Hexaly_xd")
+			self._set_row_visible(key, is_xd_solver)
 		self._set_row_visible("radius_to_fixed", restriction == "radius_to_fixed")
 		self._set_row_visible("deviation_alpha", restriction == "deviation_to_fixed")
 
@@ -1397,6 +1398,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.dirichlet_extra_demand = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_extra_demand, decimals=4, step=0.1)
 		self._add_form_row(form, "dirichlet_extra_demand", "Dirichlet Extra Demand", self.dirichlet_extra_demand)
 
+		self.dirichlet_min_deviation = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_min_deviation, decimals=4, step=0.1)
+		self._add_form_row(form, "dirichlet_min_deviation", "Dirichlet Min Deviation", self.dirichlet_min_deviation)
+
+		self.dirichlet_max_deviation = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_max_deviation, decimals=4, step=0.1)
+		self._add_form_row(form, "dirichlet_max_deviation", "Dirichlet Max Deviation", self.dirichlet_max_deviation)
+
 		self.dirichlet_samples = QtWidgets.QSpinBox()
 		self.dirichlet_samples.setRange(1, 10000)
 		self.dirichlet_samples.setValue(self.scenario_params.dirichlet_samples)
@@ -1480,6 +1487,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		dirichlet_on = method == "dirichlet" or self.scenario_source.currentText() == "dirichlet"
 		self._set_row_visible("dirichlet_extra_demand", dirichlet_on)
+		self._set_row_visible("dirichlet_min_deviation", dirichlet_on)
+		self._set_row_visible("dirichlet_max_deviation", dirichlet_on)
 		self._set_row_visible("dirichlet_samples", pipe_bounds_on and method == "dirichlet")
 		self._set_row_visible("dirichlet_seed", pipe_bounds_on and method == "dirichlet")
 
@@ -3085,6 +3094,8 @@ class MainWindow(QtWidgets.QMainWindow):
 				"PIPE_BOUND_PERTURB_FIX_TOTAL": self.pipe_bound_fix_total.isChecked(),
 				"PIPE_BOUND_PERTURB_BASE": self.pipe_bound_base.currentText(),
 				"DIRICHLET_EXTRA_DEMAND": self.dirichlet_extra_demand.value(),
+				"DIRICHLET_MIN_DEVIATION": self.dirichlet_min_deviation.value(),
+				"DIRICHLET_MAX_DEVIATION": self.dirichlet_max_deviation.value(),
 				"DIRICHLET_SAMPLES": self.dirichlet_samples.value(),
 				"DIRICHLET_SEED": self.dirichlet_seed.value(),
 			}

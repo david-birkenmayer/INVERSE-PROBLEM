@@ -5,3 +5,5 @@ Kadu at 4 measurements for uniform:
 for dirichlet:
 13, 19, 24, 3
 (Changed 14 to 13)
+
+How can I run the data files?

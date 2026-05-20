@@ -1,0 +1,236 @@
+First we define what we mean by distance on graphs
+#def[Distance Function][
+  Let $G = (V,E)$ be a connected, simple graph. A _distance function_ on $G$ is a map $ell: E -> RR_+$ such that the triangle inequality holds, i.e. for all $u,v,w in V$ with $(u,v),(v,w),(u,w) in E$ it holds
+  $ d(u, w) <= d(u,v) + d(v, w) $
+]
+
+#lem[Extending to a Metric][
+  Given a graph $G=(V,E)$ with distance function $ell$, we can extend $ell$ to a metric $overline(ell)$ on the vertex set $V$ by taking the shortest path distance. That is,
+  $ "dist"_ell (u,w) := min_((u,v_1),(v_1,v_2),...,(v_k,w) in E) sum_(i=0)^k ell(v_i, v_(i+1)), quad u,v in V $
+  defines a metric on $V$ with $"dist"_ell (u,v) = ell(u,v)$ for $(u,v) in E$.
+]
+
+
+#def[Star Graph][
+  A _star graph_ is a graph with one central vertex $v^*$ and $q in NN$ edges $e_q$ of length $ell_q > 0$ connecting to leaves $v_q$. We call a star _uniform_ if $ell_q = 1$ for all $q$.
+]
+We can identify $cal(V)$ with $q$ copies of the unit interval $[0,ell_q]$ all glued together at $0$. The distance between two points on different edges is the sum of their distances to the center.
+
+In the following we assume that we are given a finite metric tree $G$. Furthermore we assume that the kernel functions $K_i = K$ are identical.
+
+
+-- to show --
+- The valleys don't have to be attained at a single point, but can be attained on a whole set.
+
+
+#def[Metric Graph][
+Let $G = (V,E)$ be a connected, simple graph with a length function $ell: E -> RR_+$, and let $arrow(E, size: #1em)$ be an orientation of $E$.\
+Define 
+$ Gamma := V union.dot P$
+where _edge points_, denoted by symbolic pairs:
+$ P:= {chevron.l e, t chevron.r | e in arrow(E, size: #1em) , thick thick 0 < t < ell(e)} $
+Define a function $d: Gamma times Gamma -> RR_+$
+$ 
+  hat(d)(v,w) &:= "dist"_(ell)(v,w) \
+  hat(d)(v, chevron.l (v,w), t chevron.r) &:= t \
+  hat(d)(w, chevron.l (v,w), t chevron.r) &:= ell(v,w)-t \
+  hat(d)(chevron.l e, t chevron.r, chevron.l e, t' chevron.r) :&= abs(t-t')\
+$
+Then we can extend $hat(d)$ to a metric $d := "dist"_hat(d)$ on $Gamma$. It fulfills for $e != e'$:
+$
+  d(chevron.l e, t chevron.r, chevron.l e', t' chevron.r) &:= min_(v in e, v' in e')
+  hat(d)(chevron.l e, t chevron.r, v) + hat(d)(v, v') + hat(d)(v', chevron.l e', t' chevron.r) \
+$
+The metric space $(Gamma, d)$ is called the _metric graph_ induced by $G$ and $ell$.
+
+]
+
+
+
+]
+
+#def[Metric Graph (Topological Construction)][
+Let $G=(V,E)$ be a connected, simple graph with $ell:E -> RR_+$. Choose an orientation $arrow(E, size: #1em)$.
+For each oriented edge $e=(u,v)$, let
+$ I_e := [0, ell(e)] $
+and consider the disjoint union
+$ X_0 := {(e,t) | e in arrow(E, size: #1em), 0 <= t <= ell(e)}. $
+Write points in $I_e$ as $(e,t)$ with $t in [0, ell(e)]$.
+
+Define an equivalence relation $~$ on $X_0$ by identifying endpoints with incident vertices:
+$ (e,0) ~ u quad "and" quad (e, ell(e)) ~ v quad "for every" e=(u,v). $
+Set
+$ Gamma_top := X_0 slash ~. $
+
+Define $d_top: Gamma_top times Gamma_top -> RR_+$ as the intrinsic path metric:
+$
+  d_top (x,y) := inf{ L(gamma) : gamma "is a continuous path from" x "to" y },
+$
+where $L(gamma)$ is computed edgewise from the Euclidean length on each interval $I_e$.
+
+The metric space $(Gamma_top, d_top)$ is called the metric graph induced by $G$ and $ell$ (topological construction).
+]
+
+
+#lem[Topological Metric Graphs are Geodesic][
+Let $G=(V,E)$ be connected and finite, and let $(Gamma_top, d_top)$ be as above. Then $(Gamma_top, d_top)$ is a geodesic space.
+
+#pf[
+Fix $x,y in Gamma_top$. Choose edges $e_x=(u_x,v_x)$ and $e_y=(u_y,v_y)$ containing $x$ and $y$ (allowing the case that one of them is a vertex).
+
+For any vertices $a,b in V$, let $dist_ell(a,b)$ be the shortest-path distance in the weighted graph $(G,ell)$. Since $G$ is finite and $ell>0$, there exists a vertex path from $a$ to $b$ attaining $dist_ell(a,b)$.
+
+For each choice $a in {u_x,v_x}$ and $b in {u_y,v_y}$, define
+$
+  D_(a,b) := d_(I_(e_x))(x,a) + dist_ell(a,b) + d_(I_(e_y))(b,y),
+$
+where $d_(I_(e))(s,t)$ is interval distance along $I_e$. Let
+$ D := min_(a in {u_x,v_x}, b in {u_y,v_y}) D_(a,b). $
+
+Construct a path $gamma$ from $x$ to $y$ by concatenating:
++ the straight subsegment in $I_(e_x)$ from $x$ to the minimizing endpoint $a$,
++ a shortest weighted vertex path from $a$ to $b$ (realized by concatenated full edge intervals),
++ the straight subsegment in $I_(e_y)$ from $b$ to $y$.
+Then $L(gamma)=D$.
+
+Conversely, any continuous path from $x$ to $y$ determines a walk through edges and vertices, hence has length at least $D$. Therefore $d_top(x,y)=D=L(gamma)$, so $gamma$ is a minimizing path.
+
+Thus every pair of points is joined by a length-minimizing path, and $(Gamma_top,d_top)$ is geodesic.
+]
+]
+
+  A _path_ between two points $scp(e,t)$ and $scp(e',t') in Gamma$ is a tuple 
+  $ (scp(e,t),v_1,...,v_k,scp(e',t')) $
+  with $k in NN$ and $v_1,...,v_k in V$ such that, if $k>0$ we have that
+   $v_0 in e, v_k in e' $ and $(v_1, ..., v_k)$ form a path in $G$ 
+   and if $k=0$ we require $e=e'$.
+
+  Equipping the intervals with the euclidean distance $d_e (scp(e,t), scp(e,t')) := abs(t-t')$ induces a distance function on the edge set 
+  We can extend this to a metric $d$ on $Gamma$ by using the shortest path distances.
+  The resulting metric space $(Gamma, d)$ is called the _metric graph_ induced by $G$ and $ell$.
+
+  
+#def[Metric Graphs, alternative definition][
+  Let $G = (V,E)$ be a connected, simple graph with a length function $ell: E -> RR_+$ fulfilling the triangle inequality. We assume here that $E subs V times V$ is represented as a symmetric relation on $V$, and that $ell$ is a symmetric function on $E$.\
+  We identify each edge $e=(u, v) in E$ with a copy of the open interval $(0, ell(e))$, and identify the endpoints $0$ and $ell(e)$ with the vertices $u$ and $v$ respectively. Consider the disjoint union of these intervals:
+  $ P := union.sq.big_(e in E) [0, ell(e)] $
+  where we denote the point corresponding to $e in E$ and $t in [0, ell(e)]$ by $scp(e,t)$.
+  
+   define an equivalence relation $~$ on $P$ generated by the rules:
+  $
+  scp((u,v),t) &~ scp((v,u),ell(u,v)-t) quad quad&& ("reversal") \
+  scp((u,v), 0) &~ scp((u,w),0) && ("vertex identification") \ 
+  scp((u,v), t) &~ scp((u,v), t) && ("reflexivity") \
+  $
+  for all $(u,v),(u,w) in E$ and $t in [0, ell(u,v)]$. \
+  Define $Gamma := P slash ~$ as the quotient space. Equipping the intervals with the euclidean distance $d_e (scp(e,t), scp(e,t')) := abs(t-t')$ induces a distance function on the edge set 
+  $ union.big.sq_(e in E)([0, ell(e)] times [0, ell(e)]) slash ~ quad subs quad Gamma times Gamma $
+  $  $ 
+  We can extend this to a metric $d$ on $Gamma$ by using the shortest path distances.
+  The resulting metric space $(Gamma, d)$ is called the _metric graph_ induced by $G$ and $ell$.
+]
+
+Note that the orientatin $arrow(E, size: #1em)$ was chosen to obtain a unique representation of the edge points. Alternatively, we could use $E$ instead and divide $P$ by the relation 
+$ scp((u,v), t) ~ scp((v,u), (d(u,v)-t)) $
+
+
+#def[Metric Graph][
+Let $G = (V,E)$ be a connected, simple graph with a length function $ell: E -> RR_+$, and let $arrow(E, size: #1em)$ be an orientation of $E$.\
+Define 
+$ Gamma := V union.dot P$
+where _edge points_, denoted by symbolic pairs:
+$ P:= {scp(e,t) | e in arrow(E, size: #1em) , thick thick 0 < t < ell(e)} $
+Define a function $d: Gamma times Gamma -> RR_+$ by
+$ 
+  d(scp(e,t), scp(e,t')) &:= abs(t-t') \
+  d(scp(e,t), scp(e',t')) &:=
+  min_(v in e, thin v' in e') d_e (scp(e,t), v) + dist_ell (v, v') + d_e'(v', scp(e',t'))
+  )
+$
+for $scp(e,t), scp(e,t'), scp(e',t') in Gamma$ with $e != e'$, where $d_e$ is defined by 
+$
+d_((v,w)) &:= (v, scp((v,w), t)) := t\
+d_((v,w)) &:= (w, scp((v,w), t)) := ell(v,w)-t
+$
+The pair $(Gamma, d)$ is called the _metric graph_ induced by $G$ and $ell$.
+
+]
+
+
+
+
+
+
+
+#def[Regular Center Configuration][
+  Let $x = (x_1,...,x_p) in cal(V)^p$ be a placement of $p$ centers on the metric tree $G$. We call $x$ a _regular configuration_ if:
+  + No center coincides with a graph vertex: $x_i in cal(E)$ (interior of edges) for all $i$.
+  + The removal of $x$ yields exactly $k$ connected components $cal(V)_1,...,cal(V)_k$ with $k >= 2$ (no singleton components after removal).
+  + Each component contains at least one graph vertex (non-degenerate Voronoi regions).
+]
+
+The set of all regular configurations on $cal(V)$ is denoted $cal(X)_"reg" subs cal(V)^p$.
+
+#lem[Minimum over a Fixed Compact Set is Continuous][
+  Let $X$ be a metric space, $T$ a compact metric space, and $f: X times T -> RR$ continuous. Define
+  $
+    v(x) := min_(t in T) f(x,t).
+  $
+  Then $v: X -> RR$ is continuous.
+]
+
+#pf[
+  Let $x_n -> x$. Choose $t_n in T$ with $v(x_n) = f(x_n,t_n)$.
+  Since $T$ is compact, after passing to a subsequence we may assume $t_n -> t_* in T$.
+  By continuity of $f$,
+  $
+    liminf_(n->infinity) v(x_n)
+    = liminf_(n->infinity) f(x_n,t_n)
+    = f(x,t_*)
+    >= v(x).
+  $
+  On the other hand, for any fixed minimizer $hat(t) in arg min_(t in T) f(x,t)$,
+  $
+    limsup_(n->infinity) v(x_n)
+    <= limsup_(n->infinity) f(x_n,hat(t))
+    = f(x,hat(t))
+    = v(x).
+  $
+  Hence $v(x_n) -> v(x)$, so $v$ is continuous. $square$
+]
+
+#lem[Continuity of Valley Heights under Regular Placement][
+  Let $x^0 in cal(X)_"reg"$ and fix a component index $j$.
+  Then there exist a neighborhood $U$ of $x^0$ in $cal(X)_"reg"$ and a compact set
+  $C_j subs cal(V)$ such that for all $x in U$:
+  + $C_j subs cal(V)_j(x)$,
+  + $min_(t in cal(V)_j(x)) F(x,t) = min_(t in C_j) F(x,t)$.
+  Consequently, $m_j(x) := min_(t in cal(V)_j(x)) F(x,t)$ is continuous on $U$ and therefore on $cal(X)_"reg"$.
+]
+
+#pf[
+  Fix $x^0 in cal(X)_"reg"$ and $j$.
+
+  Because $x^0$ is regular, all centers are in edge interiors and the component decomposition is locally stable: there exists a neighborhood $U_0$ of $x^0$ in which the same component labels persist and each $cal(V)_j(x)$ differs from $cal(V)_j(x^0)$ only by small boundary slivers near the moving centers.
+
+  Since $K(r) -> infinity$ as $r arrow.b 0$, points sufficiently close to any center have arbitrarily large potential value.
+  Choose $M > m_j(x^0)+1$. By continuity of $F$, after shrinking to a neighborhood $U subs U_0$ we can ensure:
+  + every point in those boundary slivers has value $F(x,t) > M$ for all $x in U$,
+  + there exists a nonempty compact interior core $C_j subs cal(V)_j(x^0)$ with $F(x,t) <= M-1$ for some $t in C_j$ and all $x in U$.
+
+  Therefore no minimizer of $F(x,dot)$ on $cal(V)_j(x)$ can lie in the slivers, so every minimizer lies in the common compact set $C_j$. Hence
+  $
+    m_j(x) = min_(t in cal(V)_j(x)) F(x,t) = min_(t in C_j) F(x,t)
+  $
+  for all $x in U$.
+
+  Now apply the previous theorem to the continuous map $(x,t) mapsto F(x,t)$ on $U times C_j$ with fixed compact feasible set $C_j$. It follows that $x mapsto min_(t in C_j) F(x,t)$ is continuous on $U$, hence $m_j$ is continuous on $U$.
+
+  Since $x^0$ and $j$ were arbitrary, $m_j$ is continuous on all of $cal(X)_"reg"$. $square$
+]
+
+#cor[
+  In the regular regime, continuity of valley heights can be reduced to a fixed-compact-set minimization problem. No global hemicontinuity argument for the full moving component correspondence is needed.
+]
+
+]
