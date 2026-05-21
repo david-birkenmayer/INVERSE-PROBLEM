@@ -23,7 +23,6 @@
 //math commands
 #let bset(a, b) = ${#a | #b}$
 #let time(a) = $cal(O)(#a)$
-#let scp(a, b) = $lr(angle.l #a, #b angle.r)$
 
 //problem-name formatting
 #let problem-name(name) = text(font: "TeX Gyre Heros", weight: "semibold", smallcaps(name))

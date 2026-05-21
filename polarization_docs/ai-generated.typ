@@ -1,4 +1,4 @@
-#set document(title: "Discrete Polarization on Metric Graphs", author: "", date: datetime.today())
+#set document(title: "Discrete Polarization on Metric Graphs")
 
 #set page(numbering: "1")
 #set text(lang: "en")
@@ -142,11 +142,11 @@ Given that optimal configurations have $c_0 = 0$ and $c_p = 1$ by a standard bou
 ]
 
 #remark(title: "Uniqueness")[
-  The optimal configuration $X^*$ is _unique_. The equioscillation conditions $U_{X^*}(0) = U_{X^*}(c_j^*) = U_{X^*}(1)$ give $p$ equations in $p$ unknowns $(x_1^*,...,x_p^*)$. Farkas, Nagy, and Révész (2024) prove that the map $Phi: (x_1,...,x_p) mapsto (min_{I_0} U_X, ..., min_{I_p} U_X)$ is a _homeomorphism_ onto its image. The equioscillation locus $Phi^(-1)({(tau,...,tau) : tau in RR})$ therefore intersects the feasible set in at most one point, giving uniqueness.
+  The optimal configuration $X^*$ is _unique_. The equioscillation conditions $U_{X^*}(0) = U_{X^*}(c_j^*) = U_{X^*}(1)$ give $p$ equations in $p$ unknowns $(x_1^*,...,x_p^*)$. Farkas, Nagy, and Révész (2024) prove that the map $Phi: (x_1,...,x_p) arrow.r.bar (min_{I_0} U_X, ..., min_{I_p} U_X)$ is a _homeomorphism_ onto its image. The equioscillation locus $Phi^(-1)({(tau,...,tau) : tau in RR})$ therefore intersects the feasible set in at most one point, giving uniqueness.
 ]
 
 #remark(title: "Non-differentiable $phi$")[
-  The equioscillation theorem extends to any _strictly convex_ $phi$ without requiring differentiability. The proof uses two changes: (i) the unique interior minimizer on each gap still exists (strict convexity implies any local minimizer is unique; no derivative is needed), and (ii) the KKT gradient condition is replaced by its subdifferential analogue: $0 in sum_l lambda_l partial_X U_{X^*}(m_l)$. The sign pattern of any subgradient selection is identical to the differentiable case (at $t > x_j$, any element of $partial phi(t - x_j)$ is positive since $phi$ is decreasing; at $t < x_j$ it is negative), so the T-system Lemma carries through unchanged.
+  The equioscillation theorem extends to any _strictly convex_ $phi$ without requiring differentiability. The proof uses two changes: (i) the unique interior minimizer on each gap still exists (strict convexity implies any local minimizer is unique; no derivative is needed), and (ii) the KKT gradient condition is replaced by its subdifferential analogue: $0 in sum_l lambda_l ∂_X U_{X^*}(m_l)$. The sign pattern of any subgradient selection is identical to the differentiable case (at $t > x_j$, any element of $∂ phi(t - x_j)$ is positive since $phi$ is decreasing; at $t < x_j$ it is negative), so the T-system Lemma carries through unchanged.
 ]
 
 #remark(title: "Literature")[

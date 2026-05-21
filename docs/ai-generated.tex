@@ -1,0 +1,356 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\section{Overview}
+
+This document collects definitions, lemmas, and proofs for the discrete
+polarization problem on metric graphs.
+
+\subsection{Problem Statement}
+
+Let \(G = (V,E)\) be a graph and let \(A\) be the associated metrized
+graph. For a fixed integer \(p\), choose a subset
+\(X = \left\{ x_{1},\ldots,x_{p} \right\}\) with \(X \subseteq V\) to
+maximize
+\[\min_{x \in A}\sum_{i = 1}^{p}\varphi(d\left( x,x_{i} \right)).\]
+
+Assumptions used throughout:
+
+\begin{itemize}
+\item
+  \(d\) is the path metric on \(A\).
+\item
+  \(\varphi:(0,\infty\rbrack \rightarrow \lbrack 0,\infty)\) is
+  decreasing and strictly convex on \((0,\infty)\), with
+  \(\varphi(0^{+}): = \infty\).
+\item
+  A primary example is \(\varphi(t) = \frac{1}{t}\) for \(t > 0\).
+\end{itemize}
+
+\subsection{Extended Real Definition}
+
+We work in the extended reals
+\(\underset{¯}{\mathbb{R}} = {\mathbb{R}} \cup \left\{ + \infty, - \infty \right\}\).
+The choice \(\varphi(0) = + \infty\) is natural:
+
+\begin{itemize}
+\item
+  When \(x = x_{i}\), the distance is \(d\left( x,x_{i} \right) = 0\),
+  and the ``utility'' contribution diverges. This reflects that a
+  selected point has infinite affinity to itself.
+\item
+  For any \(x \in A\), if \(x \in X\), then \(U_{X}(x) = + \infty\),
+  which does not constrain the minimum. The real bottleneck comes from
+  points \(x \in A\backslash X\) (unselected points).
+\item
+  This avoids artificial domain restrictions or piecewise definitions.
+\end{itemize}
+
+\subsection{Semi-Infinite Programming Formulation}
+
+Reformulate the problem as a \textbf{semi-infinite program} (SIP):
+
+\textbf{Decision variables (finitely many):} positions
+\(x_{1},\ldots,x_{p} \in V\).
+
+\textbf{Objective:} Maximize threshold \(\tau \in {\mathbb{R}}\).
+
+\textbf{Constraint set (infinitely many):} for all \(x \in A\),
+\[\sum_{i = 1}^{p}\varphi(d\left( x,x_{i} \right)) \geq \tau.\]
+
+This is a canonical SIP: finitely many variables, infinitely many
+constraints (one per point in the continuum \(A\)). The optimization is
+equivalent to the original problem:
+\[F\left( X^{*} \right) = \max_{\left\{ X,|X| = p \right\}}\min_{\left\{ x \in A \right\}}U_{X}(x) = \max\tau\text{ such that }U_{X}(x) \geq \tau,\forall x \in A.\]
+
+\subsubsection{Key SIP Theory}
+
+From the theory of semi-infinite programming (Hettich--Kortanek, 1993;
+Remez, 1934):
+
+\begin{enumerate}
+\item
+  \textbf{Finite Active Set Property:} The optimal value satisfies a
+  system involving finitely many ``active constraints.'' In metric graph
+  problems, this means the global minimum \(\min_{x \in A}U_{X}(x)\) is
+  attained at finitely many witnesses: vertices and at most one critical
+  point per edge (where edge-wise convexity admits an interior minimum).
+\item
+  \textbf{Equioscillation and Optimality:} An optimal placement
+  \(X^{*}\) satisfies: there exist finitely many points
+  \(x_{1}^{*},\ldots,x_{k}^{*} \in A\) (the ``active set'') such that
+  \(U_{\left\{ X^{*} \right\}}\left( x_{j}^{*} \right) = \tau^{*} = F\left( X^{*} \right)\)
+  for all \(j\), and these points ``equioscillate'' in a suitably
+  refined sense (cf. Remez equioscillation theorem).
+\item
+  \textbf{Karush--Kuhn--Tucker Conditions:} Optimality is characterized
+  via KKT on the active set. For trees and bounded-treewidth graphs,
+  this yields a finite verification.
+\end{enumerate}
+
+This SIP perspective gives us:
+
+\begin{itemize}
+\item
+  A finite reduction of the continuum problem to a finite witness set.
+\item
+  Algorithmic guidance: solve the SIP via discretization (refine witness
+  set iteratively) or exchange algorithms (Remez-like updates).
+\item
+  Theory: apply minimax optimality theory and complementary slackness to
+  prove optimality certificates.
+\end{itemize}
+
+\subsection{Planned Structure}
+
+\begin{enumerate}
+\item
+  Line graphs
+\item
+  Star graphs
+\item
+  Trees
+\item
+  Bounded-treewidth graphs
+\item
+  Approximation for general graphs
+\end{enumerate}
+
+\section{Line Graphs}
+
+\subsection{Setup}
+
+Let \(A = \lbrack 0,1\rbrack\) with the standard metric
+\(d(s,t) = |s - t|\). We study the \emph{continuous placement} problem:
+choose \(p\) points
+\(X = \left\{ x_{1} < \cdots < x_{p} \right\} \subset (0,1)\) (strictly
+interior) to maximize
+\[F(X): = \min_{\left\{ t \in \lbrack 0,1\rbrack \right\}}U_{X}(t),\quad U_{X}(t): = \sum_{\left\{ i = 1 \right\}}^{p}\varphi(\left| t - x_{i} \right|).\]
+The \(p\) chosen points divide \(\lbrack 0,1\rbrack\) into \(p + 1\)
+closed subintervals
+\[I_{0} = \left\lbrack 0,x_{1} \right\rbrack,\quad I_{j} = \left\lbrack x_{j},x_{\left\{ j + 1 \right\}} \right\rbrack\text{ for }j = 1,\ldots,p - 1,\quad I_{p} = \left\lbrack x_{p},1 \right\rbrack.\]
+Since \(\varphi(0^{+}) = + \infty\), the function \(U_{X}\) blows up at
+each \(x_{i}\), so \(\min_{t}U_{X}(t)\) is attained in
+\(\begin{array}{r}
+\lbrack 0,1\rbrack \\
+\left\{ x_{1},\ldots,x_{p} \right\}
+\end{array}\). On each interior gap
+\(\left( x_{j},x_{\left\{ j + 1 \right\}} \right)\) (where both
+endpoints are in \(X\)), \(U_{X}\) is strictly convex with
+\(U_{X} \rightarrow + \infty\) at both ends, so \(U_{X}\) has a
+\emph{unique interior minimizer}
+\(c_{j} \in \left( x_{j},x_{\left\{ j + 1 \right\}} \right)\). On the
+boundary intervals \(I_{0}\) and \(I_{p}\), \(U_{X}\) is strictly convex
+with \(U_{X} \rightarrow + \infty\) at the interior endpoint; the
+minimum is attained at a unique point \(c_{0} \in I_{0}\) (either
+\(t = 0\) or an interior point) and \(c_{p} \in I_{p}\) (either
+\(t = 1\) or an interior point). We thus have exactly \(p + 1\)
+\emph{candidate minimizers}
+\[c_{0} \in I_{0},\quad c_{1} \in \left( x_{1},x_{2} \right),\quad\ldots,\quad c_{\left\{ p - 1 \right\}} \in \left( x_{\left\{ p - 1 \right\}},x_{p} \right),\quad c_{p} \in I_{p}.\]
+Given that optimal configurations have \(c_{0} = 0\) and \(c_{p} = 1\)
+by a standard boundary reflection argument, we may henceforth write the
+candidates as \(0,c_{1},\ldots,c_{\left\{ p - 1 \right\}},1\).
+
+\subsection{Gradient Sign Pattern (T-system Lemma)}
+
+\textbf{Lemma} \emph{(T-system)} \textbf{.}  Let
+\(X = \left\{ x_{1} < \cdots < x_{p} \right\} \subset (0,1)\) be fixed
+and let \(\varphi\) be differentiable on \((0,\infty)\) with
+\(\varphi\prime < 0\). The gradient vectors
+\[g^{\left\{ (k) \right\}}: = \nabla_{X}U_{X}\left( c_{k} \right) \in {\mathbb{R}}^{p},\quad{g^{\left\{ (k) \right\}}}_{j} = - \varphi\prime\left( \left| c_{k} - x_{j} \right| \right) \cdot \operatorname{sgn}(c_{k} - x_{j}),\]
+for \(k = 0,1,\ldots,p\) (where \(c_{0} = 0\), \(c_{p} = 1\)) form a
+\emph{Chebyshev system (T-system)}: the sign pattern of
+\(g^{\left\{ (k) \right\}}\) is
+\[{g^{\left\{ (k) \right\}}}_{j} > 0\text{ if }c_{k} > x_{j},\quad{g^{k}}_{j} < 0\text{ if }c_{k} < x_{j}.\]
+Consequently, the \(p + 1\) vectors
+\(g^{\left\{ (0) \right\}},\ldots,g^{\left\{ (p) \right\}} \in {\mathbb{R}}^{p}\)
+satisfy: \emph{no proper subset} has \(0\) in its convex hull.
+
+\emph{Proof.} Since \(c_{k} \in I_{k}\) and
+\(I_{k} = \left( x_{k},x_{\left\{ k + 1 \right\}} \right)\) (with
+\(x_{0}: = 0\), \(x_{\left\{ p + 1 \right\}}: = 1\)), we have
+\(c_{k} > x_{j}\) for \(j \leq k\) and \(c_{k} < x_{j}\) for \(j > k\).
+Thus
+\({g^{\left\{ (k) \right\}}}_{j} = - \varphi\prime\left( \left| c_{k} - x_{j} \right| \right) \cdot \operatorname{sgn}(c_{k} - x_{j})\),
+which is positive (since \(\varphi\prime < 0\) and
+\(c_{k} - x_{j} > 0\)) for \(j \leq k\), and negative for \(j > k\). The
+sign pattern of \(g^{\left\{ (k) \right\}}\) is therefore
+\(( + ,\ldots, + , - ,\ldots, - )\) with the sign change after position
+\(k\). These \(p + 1\) vectors with consecutively shifting sign patterns
+form a Chebyshev system. For any proper subset
+\(S \subset \left\{ 0,\ldots,p \right\}\) (proper inclusion), some sign
+position \(j\) is missing both a vector with \(g_{j} > 0\) and one with
+\(g_{j} < 0\) (or the sign change at \(j\) is absent), so the convex
+cone generated by \(S\) cannot contain \(0\). \(\square\)
+
+   \(\square\)
+
+\subsection{Equioscillation Theorem}
+
+\textbf{Theorem} \emph{(Equioscillation on \${[}0,1{]}\$)} \textbf{.} 
+Let \(\varphi:(0,\infty) \rightarrow (0,\infty)\) be strictly convex and
+strictly decreasing with \(\varphi(0^{+}) = + \infty\), and assume
+\(\varphi\) is differentiable on \((0,\infty)\). Then
+\(X^{*} = \left\{ x_{1}^{*} < \ldots < x_{p}^{*} \right\} \subset (0,1)\)
+is an optimal configuration if and only if all \(p + 1\) candidate
+minimizers achieve the same value:
+\[U_{\left\{ X^{*} \right\}}(0) = U_{\left\{ X^{*} \right\}}\left( c_{1}^{*} \right) = \cdots = U_{\left\{ X^{*} \right\}}\left( c_{\left\{ p - 1 \right\}}^{*} \right) = U_{\left\{ X^{*} \right\}}(1) = \tau^{*}.\]
+In particular, \emph{every} candidate minimizer is a global minimizer
+(active constraint) at optimality.
+
+\emph{Proof.} \emph{(``If'')} If all \(p + 1\) candidates achieve value
+\(\tau^{*}\), then \(\min_{t}U_{\left\{ X^{*} \right\}}(t) = \tau^{*}\).
+Any other configuration \(Y\) with \(|Y| = p\) must have some interval
+\(I_{k}\) on which \(\min_{t}U_{Y}(t) \leq \tau^{*}\) by a counting
+argument (the \(p\) points of \(Y\) cannot all shift to increase the
+minimum on all \(p + 1\) intervals simultaneously). Hence
+\(F\left( X^{*} \right) = \tau^{*} \geq F(Y)\), and \(X^{*}\) is
+optimal.
+
+\emph{(``Only if'')} Let \(X^{*}\) be optimal. The SIP first-order
+optimality conditions (KKT for semi-infinite programs, see
+Hettich--Kortanek 1993) state: there exist active points
+\(m_{1},\ldots,m_{r} \in \lbrack 0,1\rbrack\) with
+\(U_{\left\{ X^{*} \right\}}\left( m_{l} \right) = F\left( X^{*} \right)\)
+and multipliers \(\lambda_{l} > 0\), \(\sum\lambda_{l} = 1\), such that
+\[\sum_{\left\{ l = 1 \right\}}^{r}\lambda_{l}\nabla_{X}U_{\left\{ X^{*} \right\}}\left( m_{l} \right) = 0 \in {\mathbb{R}}^{p}.\]
+By strict convexity of \(U_{\left\{ X^{*} \right\}}\) on each gap, each
+\(m_{l}\) must be one of the \(p + 1\) candidates
+\(c_{0},\ldots,c_{p}\). By the T-system Lemma, no proper subset of
+\(\left\{ g^{\left\{ (0) \right\}},\ldots,g^{\left\{ (p) \right\}} \right\}\)
+contains \(0\) in its convex hull. Thus the KKT condition can only be
+satisfied if \(r = p + 1\) and all \(p + 1\) candidates appear.
+\(\square\)
+
+   \(\square\)
+
+\textbf{Remark} \emph{(Uniqueness)} \textbf{.}  The optimal
+configuration \(X^{*}\) is \emph{unique}. The equioscillation conditions
+\(U_{\left\{ X^{*} \right\}}(0) = U_{\left\{ X^{*} \right\}}\left( c_{j}^{*} \right) = U_{\left\{ X^{*} \right\}}(1)\)
+give \(p\) equations in \(p\) unknowns
+\(\left( x_{1}^{*},\ldots,x_{p}^{*} \right)\). Farkas, Nagy, and Révész
+(2024) prove that the map
+\(\Phi:\left( x_{1},\ldots,x_{p} \right) \rightarrow \left( \min_{\left\{ I_{0} \right\}}U_{X},\ldots,\min_{\left\{ I_{p} \right\}}U_{X} \right)\)
+is a \emph{homeomorphism} onto its image. The equioscillation locus
+\(\Phi^{- 1}\left( \left\{ (\tau,\ldots,\tau):\tau \in {\mathbb{R}} \right\} \right)\)
+therefore intersects the feasible set in at most one point, giving
+uniqueness.
+
+\textbf{Remark} \emph{(Non-differentiable \$phi\$)} \textbf{.}  The
+equioscillation theorem extends to any \emph{strictly convex}
+\(\varphi\) without requiring differentiability. The proof uses two
+changes: (i) the unique interior minimizer on each gap still exists
+(strict convexity implies any local minimizer is unique; no derivative
+is needed), and (ii) the KKT gradient condition is replaced by its
+subdifferential analogue:
+\(0 \in \sum_{l}\lambda_{l}\partial_{X}U_{\left\{ X^{*} \right\}}\left( m_{l} \right)\).
+The sign pattern of any subgradient selection is identical to the
+differentiable case (at \(t > x_{j}\), any element of
+\(\partial\varphi(t - x_{j})\) is positive since \(\varphi\) is
+decreasing; at \(t < x_{j}\) it is negative), so the T-system Lemma
+carries through unchanged.
+
+\textbf{Remark} \emph{(Literature)} \textbf{.}  The equioscillation
+characterization on \(\lbrack 0,1\rbrack\) is known, but under different
+names. The foundational paper is:
+
+\begin{itemize}
+\item
+  \textbf{Fenton (2000)}: ``A min-max theorem for sums of translates,''
+  \emph{J. Math. Anal. Appl.} Proves a minimax equioscillation result
+  for concave-cusp kernels on an interval, motivated by entire function
+  theory.
+\end{itemize}
+
+The most comprehensive modern treatment is:
+
+\begin{itemize}
+\item
+  \textbf{Farkas, Nagy, Révész (2023)}: ``On the weighted
+  Bojanov--Chebyshev problem and the sum of translates method of
+  Fenton,'' \emph{Sb. Math.} \textbf{214}(8), 1163--1190.
+  (arXiv:2112.10169.) Proves existence, equioscillation, and
+  characterization for general decreasing kernels on
+  \(\lbrack 0,1\rbrack\); also establishes the intertwining phenomenon.
+\item
+  \textbf{Farkas, Nagy, Révész (2024)}: ``A homeomorphism theorem for
+  sums of translates,'' \emph{Rev. Mat. Complut.} Provides the
+  uniqueness argument via homeomorphism of the interval-maxima map.
+\end{itemize}
+
+For the circle (equidistant points are optimal for all decreasing convex
+\(\varphi\)):
+
+\begin{itemize}
+\item
+  \textbf{Hardin, Kendall, Saff (2013)}: ``Polarization optimality of
+  equally spaced points on the circle,'' \emph{Discrete Comput. Geom.}
+  \textbf{50}, 236--243. (arXiv:1208.5261.)
+\item
+  \textbf{Ambrus, Ball, Erdélyi (2012)}: ``Chebyshev constants for the
+  unit circle,'' \emph{Bull. London Math. Soc.} \textbf{44}, 1245--1262.
+  (arXiv:1006.5153.)
+\end{itemize}
+
+The SIP formulation and the extension to metric graphs do not appear in
+this literature and are new.
+
+\section{Notes}
+
+Add theorem statements and proof sketches section by section.
+
+\end{document}
