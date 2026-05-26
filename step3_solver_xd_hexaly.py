@@ -427,6 +427,7 @@ def solve_max_demand_distance_xd_hexaly(
     total_demand: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = True,
+    match_reservoir_outflow_between_pairs: bool = False,
     headloss_n: float = 2.0,
     cycle_basis_mode: str = "graph",
     reference_demands: Optional[Dict[str, float]] = None,
@@ -568,6 +569,21 @@ def solve_max_demand_distance_xd_hexaly(
                     net_b.append(-qB[p])
             m.constraint(_sum_expr(m, net_a) == float(reservoir_outflow))
             m.constraint(_sum_expr(m, net_b) == float(reservoir_outflow))
+
+        # Optional information toggle: enforce equal reservoir outflow between paired demands
+        # without pinning it to the scenario value.
+        if reservoir_node is not None and match_reservoir_outflow_between_pairs:
+            net_a_eq = []
+            net_b_eq = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.start_node == reservoir_node:
+                    net_a_eq.append(qA[p])
+                    net_b_eq.append(qB[p])
+                if pipe.end_node == reservoir_node:
+                    net_a_eq.append(-qA[p])
+                    net_b_eq.append(-qB[p])
+            m.constraint(_sum_expr(m, net_a_eq) == _sum_expr(m, net_b_eq))
 
         if math.isinf(norm_p):
             t_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0

@@ -1,933 +1,925 @@
-from typing import Dict, Iterable
-import json
-import os
-from datetime import datetime
+from __future__ import annotations
+
 import argparse
+import csv
+import json
+import math
+import os
+import subprocess
+import sys
+from datetime import datetime
+from itertools import combinations
+from typing import Dict, Iterable, List, Tuple
 
-### NETWORK AND MEASUREMENT SITES
-WDN = "Alperovits"; MEASUREMENT_SITES = 2
-# WDN = "Kadu"; MEASUREMENT_SITES = ["10", "14", "24"]
-# WDN = "Anytown"; MEASUREMENT_SITES = 1 # ([], [50, 100]) # 2 # ([], [20, 140], [20,50,60,100,120,140])
+import numpy as np
+
+from gui.cache import compute_hash, load_index, save_index
+from step1_io import compute_pipe_resistances, compute_pipe_resistances_hw, load_inp_network
+from step2_estimation import simulate_base_scenario
+from step3_solver import SolverResult
+from step3_solver_hexaly import solve_head_center_in_class_hexaly, solve_max_demand_distance_hexaly
+from step3_solver_xd_hexaly import solve_max_demand_distance_xd_hexaly
 
 
-SCENARIO = "Alperovits-base"
-PIPE_BOUNDS = False
-OUTPUT_DIR = None
-HEADLOSS_MODEL = "hw"  # "auto", "dw", or "hw"
-
+WDN = "Alperovits"
+MEASUREMENT_SITES: object = 2
+MODE = "W_d"  # W_d, C_d, W_h, C_h_fixed
+METHOD = "xd"  # xd, classical (used for W_d/C_d)
+NORM = 2.0
+DEMAND_LB = 1e-6
 MULTI_STARTS = 1
 MULTI_START_NOISE = 0.05
 MULTI_START_NOISE_REL = 0.25
-MULTI_START_SEED = None  # set int for reproducible multistarts
-
-# SOLVER = "Hexaly"
-SOLVER = "Hexaly_xd"
-
-NORM = 2  # positive int/float, or float("inf") for infinity norm
-DEMAND_LB = 1e-6  # enforce strictly positive junction demands
-USE_RESERVOIR_OUTFLOW_CONSTRAINT = False  # fix reservoir demand via net outflow
-FIX_TOTAL_DEMAND = True  # anchor sum of demands to scenario total
-MEASUREMENT_HEADS_EQUAL_ONLY = True  # only enforce equal heads at measurements
-MEASUREMENT_ALLOWLIST = None  # list of node ids or None for all junctions
-MEASUREMENT_MAX_SUBSETS = 200
-MEASUREMENT_SUBSET_SEED = 1
-MEASUREMENT_SUBSET_MODE = "all"  # "exact" or "all" (sizes 1..p)
-
-DEBUG_DUMP_ALWAYS = True
-DEBUG_DUMP_EPS = 1e-6
-CHECK_XD_BASE_FEASIBILITY = True
-CHECK_XD_CYCLE_BOUNDS = True
-XD_CYCLE_BASIS_MODE = "planar"  # "graph" (cycle_basis) or "planar" (faces)
-SKIP_FEASIBILITY_SOLVE = True
-FIXED_REFERENCE = False
-DEMAND_RESTRICTION_MODE = None  # None, "radius_to_fixed", or "deviation_to_fixed"
-RADIUS_TO_FIXED = None  # float radius for "radius_to_fixed" mode
-DEVIATION_ALPHA = None  # float alpha for "deviation_to_fixed" mode
-
+MULTI_START_SEED = None
+MEASUREMENT_HEADS_EQUAL_ONLY = True
 HEXALY_LICENSE_PATH = os.path.expanduser("~/opt/Hexaly_14_5/license.dat")
 HEXALY_TIME_LIMIT = 30
-HEXALY_STAGNATION_SECONDS = 0
-HEXALY_STAGNATION_EPS = 1e-6
 HEXALY_SEED = 0
 HEXALY_VERBOSITY = 2
-HEXALY_HEAD_MARGIN = 300.0
-HEXALY_USE_PATH_HEAD_BOUNDS = True
-
-
-from step1_io import load_inp_network, compute_pipe_resistances, compute_pipe_resistances_hw
-from step3_solver import (
-	SolverResult,
-	solve_feasibility,
-)
-from step3_solver_hexaly import solve_max_demand_distance_hexaly
-from step3_solver_xd_hexaly import solve_max_demand_distance_xd_hexaly
-from step3_solver_xd_hexaly import check_xd_feasibility_from_flows, check_xd_cycle_feasibility_from_bounds
-import debug_snapshot
-
-
-
-
-def _get_planar_face_cycles(G, network) -> list[list[str]]:
-	import networkx as nx
-
-	coords = {
-		node_id: node.coordinates
-		for node_id, node in network.nodes.items()
-		if node.coordinates is not None
-	}
-	if len(coords) < len(G.nodes):
-		return nx.cycle_basis(G)
-
-	is_planar, embedding = nx.check_planarity(G)
-	if not is_planar:
-		return nx.cycle_basis(G)
-
-	try:
-		faces = list(embedding.faces())
-	except Exception:
-		return nx.cycle_basis(G)
-
-	if not faces:
-		return nx.cycle_basis(G)
-
-	def _face_area(face: list[str]) -> float:
-		area = 0.0
-		for i in range(len(face)):
-			x1, y1 = coords[face[i]]
-			x2, y2 = coords[face[(i + 1) % len(face)]]
-			area += x1 * y2 - x2 * y1
-		return 0.5 * area
-
-	areas = [abs(_face_area(face)) for face in faces]
-	outer_idx = max(range(len(faces)), key=lambda i: areas[i])
-	return [face for i, face in enumerate(faces) if i != outer_idx]
-
-
-def _print_xd_paths_cycles(
-	network,
-	pipe_resistances: Dict[str, float],
-	reservoir_node: str | None,
-	measurement_nodes: Iterable[str],
-	cycle_basis_mode: str = "graph",
-) -> None:
-	import networkx as nx
-
-	G = nx.Graph()
-	for pipe_id, pipe in network.pipes.items():
-		weight = pipe_resistances.get(pipe_id, 1.0)
-		G.add_edge(pipe.start_node, pipe.end_node, weight=weight)
-
-	if cycle_basis_mode == "planar":
-		cycles = _get_planar_face_cycles(G, network)
-	else:
-		cycles = nx.cycle_basis(G)
-	print(f"XD cycles (count={len(cycles)}):")
-	for idx, cycle in enumerate(cycles, start=1):
-		print(f"  cycle {idx}: {cycle}")
-
-	if reservoir_node is None:
-		print("XD paths: reservoir node not found")
-		return
-
-	print("XD paths from reservoir to measurements:")
-	for meas in measurement_nodes:
-		if meas not in G.nodes:
-			print(f"  {meas}: not in graph")
-			continue
-		if meas == reservoir_node:
-			print(f"  {meas}: reservoir node")
-			continue
-		try:
-			path = nx.shortest_path(G, reservoir_node, meas, weight="weight")
-			print(f"  {meas}: {path}")
-		except nx.NetworkXNoPath:
-			print(f"  {meas}: no path")
-
-
-def _select_measurement_sets(network) -> list[list[str]]:
-	import math
-	import random
-	import re
-	from itertools import combinations
-
-	def _sample_combinations(
-		candidates: list[str],
-		sizes: list[int],
-		limit: int,
-		seed: int,
-	) -> list[list[str]]:
-		rng = random.Random(seed)
-		if limit <= 0:
-			return []
-		include_empty = 0 in sizes
-		sizes = [k for k in sizes if k != 0]
-		sample: list[list[str]] = []
-		if include_empty:
-			sample.append([])
-			limit -= 1
-			if limit <= 0:
-				return sample
-
-		total = 0
-		for k in sizes:
-			total += math.comb(len(candidates), k)
-		if total <= limit:
-			for k in sizes:
-				for combo in combinations(candidates, k):
-					sample.append(list(combo))
-			rng.shuffle(sample)
-			return sample
-
-		idx = 0
-		for k in sizes:
-			for combo in combinations(candidates, k):
-				idx += 1
-				if idx <= limit:
-					sample.append(list(combo))
-				else:
-					j = rng.randint(1, idx)
-					if j <= limit:
-						sample[j - 1] = list(combo)
-		rng.shuffle(sample)
-		return sample
-
-	if isinstance(MEASUREMENT_SITES, int):
-		p = int(MEASUREMENT_SITES)
-		if p < 0:
-			return []
-		if MEASUREMENT_ALLOWLIST is None:
-			candidates = sorted(network.junctions.keys())
-		else:
-			candidates = [str(x) for x in MEASUREMENT_ALLOWLIST]
-			candidates = [c for c in candidates if c in network.junctions]
-		if len(candidates) < p:
-			return []
-		limit = int(MEASUREMENT_MAX_SUBSETS)
-		max_size = min(p, len(candidates))
-		if MEASUREMENT_SUBSET_MODE == "all":
-			sizes = list(range(0, max_size + 1))
-		else:
-			sizes = [p]
-			if p == 0:
-				return [[]]
-		return _sample_combinations(candidates, sizes, limit, MEASUREMENT_SUBSET_SEED)
-
-	if isinstance(MEASUREMENT_SITES, str):
-		raw = MEASUREMENT_SITES.strip()
-		if raw == "":
-			return [[]]
-		if MEASUREMENT_ALLOWLIST is None:
-			candidates = sorted(network.junctions.keys())
-		else:
-			candidates = [str(x) for x in MEASUREMENT_ALLOWLIST]
-			candidates = [c for c in candidates if c in network.junctions]
-		limit = int(MEASUREMENT_MAX_SUBSETS)
-
-		m_exact = re.fullmatch(r"#(\d+)", raw)
-		if m_exact:
-			k = int(m_exact.group(1))
-			if k > len(candidates):
-				return []
-			if k == 0:
-				return [[]]
-			return _sample_combinations(candidates, [k], limit, MEASUREMENT_SUBSET_SEED)
-
-		m_range = re.fullmatch(r"#(\d+)-#(\d+)", raw)
-		if m_range:
-			k_min = int(m_range.group(1))
-			k_max = int(m_range.group(2))
-			if k_min > k_max:
-				return []
-			if k_min > len(candidates):
-				return []
-			k_max = min(k_max, len(candidates))
-			sizes = list(range(k_min, k_max + 1))
-			return _sample_combinations(candidates, sizes, limit, MEASUREMENT_SUBSET_SEED)
-
-		return []
-
-	if isinstance(MEASUREMENT_SITES, (list, tuple)):
-		if len(MEASUREMENT_SITES) == 0:
-			return [[]]
-		if all(isinstance(item, (list, tuple)) for item in MEASUREMENT_SITES):
-			return [[str(x) for x in item] for item in MEASUREMENT_SITES]
-		candidates = [str(x) for x in MEASUREMENT_SITES]
-		return [candidates]
-
-	return []
-
-
-def _write_json(path: str, payload: Dict[str, object]) -> None:
-	with open(path, "w", encoding="utf-8") as f:
-		json.dump(payload, f, indent=2, sort_keys=True)
+HEADLOSS_MODEL = "hw"  # auto, hw, dw
+OUTPUT_DIR = None
+MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS = False
+MEASUREMENT_SOURCE = "from_w_d"
+MEASUREMENT_DATA = None
+SOLVER_HASH = None
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+TOTAL_DEMAND_KEY = "-1"
+_RAW_CONFIG: Dict[str, object] = {}
 
 
 def _read_json(path: str) -> Dict[str, object]:
-	with open(path, "r", encoding="utf-8") as f:
-		return json.load(f)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_json(path: str, payload: Dict[str, object]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
 
 def _apply_config(config: Dict[str, object]) -> None:
-	global WDN, SCENARIO
-	if "WDN" in config:
-		WDN = str(config["WDN"])
-	elif "WDN_NAME" in config:
-		WDN = str(config["WDN_NAME"])
+    global WDN, MEASUREMENT_SITES, MODE, METHOD, _RAW_CONFIG
 
-	if "SCENARIO" in config:
-		SCENARIO = str(config["SCENARIO"])
-	elif "SCENARIO_NAME" in config:
-		SCENARIO = str(config["SCENARIO_NAME"])
+    _RAW_CONFIG = dict(config)
 
-	keys = {
-		"MEASUREMENT_SITES",
-		"MEASUREMENT_ALLOWLIST",
-		"MEASUREMENT_MAX_SUBSETS",
-		"MEASUREMENT_SUBSET_SEED",
-		"MEASUREMENT_SUBSET_MODE",
-		"HEADLOSS_MODEL",
-		"SOLVER",
-		"NORM",
-		"DEMAND_LB",
-		"USE_RESERVOIR_OUTFLOW_CONSTRAINT",
-		"FIX_TOTAL_DEMAND",
-		"MEASUREMENT_HEADS_EQUAL_ONLY",
-		"MULTI_STARTS",
-		"MULTI_START_NOISE",
-		"MULTI_START_NOISE_REL",
-		"MULTI_START_SEED",
-		"DEBUG_DUMP_ALWAYS",
-		"DEBUG_DUMP_EPS",
-		"CHECK_XD_BASE_FEASIBILITY",
-		"CHECK_XD_CYCLE_BOUNDS",
-		"XD_CYCLE_BASIS_MODE",
-		"SKIP_FEASIBILITY_SOLVE",
-		"FIXED_REFERENCE",
-		"DEMAND_RESTRICTION_MODE",
-		"RADIUS_TO_FIXED",
-		"DEVIATION_ALPHA",
-		"HEXALY_LICENSE_PATH",
-		"HEXALY_TIME_LIMIT",
-		"HEXALY_STAGNATION_SECONDS",
-		"HEXALY_STAGNATION_EPS",
-		"HEXALY_SEED",
-		"HEXALY_VERBOSITY",
-		"HEXALY_HEAD_MARGIN",
-		"HEXALY_USE_PATH_HEAD_BOUNDS",
-		"OUTPUT_DIR",
-	}
-	for key in keys:
-		if key in config:
-			globals()[key] = config[key]
+    if "WDN" in config:
+        WDN = str(config["WDN"])
+    elif "WDN_NAME" in config:
+        WDN = str(config["WDN_NAME"])
+
+    for key in {
+        "MEASUREMENT_SITES",
+        "MODE",
+        "METHOD",
+        "NORM",
+        "DEMAND_LB",
+        "MULTI_STARTS",
+        "MULTI_START_NOISE",
+        "MULTI_START_NOISE_REL",
+        "MULTI_START_SEED",
+        "MEASUREMENT_HEADS_EQUAL_ONLY",
+        "HEXALY_LICENSE_PATH",
+        "HEXALY_TIME_LIMIT",
+        "HEXALY_SEED",
+        "HEXALY_VERBOSITY",
+        "HEADLOSS_MODEL",
+        "OUTPUT_DIR",
+        "SOLVER_HASH",
+        "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS",
+        "MEASUREMENT_SOURCE",
+        "MEASUREMENT_DATA",
+    }:
+        if key in config:
+            globals()[key] = config[key]
 
 
-def _resolve_scenario_path(config: Dict[str, object] | None = None) -> str:
-	if config and "SCENARIO_FILE" in config:
-		return str(config["SCENARIO_FILE"])
-	return os.path.join("scenario", WDN, f"{SCENARIO}.json")
+def _normalize_measurement_dict(data: object) -> Dict[str, float]:
+    if not isinstance(data, dict):
+        raise ValueError("Measurement data must be a dictionary.")
+    normalized: Dict[str, float] = {}
+    for key, value in data.items():
+        normalized[str(key)] = float(value)
+    return normalized
 
 
-def _build_parameters_snapshot(
-	headloss_model_local: str | None = None,
-	measurement_nodes: Iterable[str] | None = None,
-	measurement_sets_count: int | None = None,
-	scenario_path: str | None = None,
-) -> Dict[str, object]:
-	resolved_scenario_path = scenario_path if scenario_path is not None else _resolve_scenario_path()
-	return {
-		"WDN": WDN,
-		"WDN_NAME": WDN,
-		"SCENARIO": SCENARIO,
-		"SCENARIO_FILE": resolved_scenario_path,
-		"OUTPUT_DIR": OUTPUT_DIR,
-		"MEASUREMENT_SITES": MEASUREMENT_SITES,
-		"MEASUREMENT_SUBSET_MODE": MEASUREMENT_SUBSET_MODE,
-		"MEASUREMENT_ALLOWLIST": MEASUREMENT_ALLOWLIST,
-		"MEASUREMENT_MAX_SUBSETS": MEASUREMENT_MAX_SUBSETS,
-		"MEASUREMENT_SUBSET_SEED": MEASUREMENT_SUBSET_SEED,
-		"MEASUREMENT_SET_COUNT": measurement_sets_count,
-		"MEASUREMENT_NODES": list(measurement_nodes) if measurement_nodes is not None else None,
-		"PIPE_BOUNDS": PIPE_BOUNDS,
-		"HEADLOSS_MODEL": HEADLOSS_MODEL,
-		"HEADLOSS_MODEL_LOCAL": headloss_model_local,
-		"SOLVER": SOLVER,
-		"GLOBAL_SOLVER": None,
-		"NORM": NORM,
-		"DEMAND_LB": DEMAND_LB,
-		"USE_RESERVOIR_OUTFLOW_CONSTRAINT": USE_RESERVOIR_OUTFLOW_CONSTRAINT,
-		"FIX_TOTAL_DEMAND": FIX_TOTAL_DEMAND,
-		"MEASUREMENT_HEADS_EQUAL_ONLY": MEASUREMENT_HEADS_EQUAL_ONLY,
-		"MULTI_STARTS": MULTI_STARTS,
-		"MULTI_START_NOISE": MULTI_START_NOISE,
-		"MULTI_START_NOISE_REL": MULTI_START_NOISE_REL,
-		"MULTI_START_SEED": MULTI_START_SEED,
-		"DEBUG_DUMP_ALWAYS": DEBUG_DUMP_ALWAYS,
-		"DEBUG_DUMP_EPS": DEBUG_DUMP_EPS,
-		"CHECK_XD_BASE_FEASIBILITY": CHECK_XD_BASE_FEASIBILITY,
-		"CHECK_XD_CYCLE_BOUNDS": CHECK_XD_CYCLE_BOUNDS,
-		"XD_CYCLE_BASIS_MODE": XD_CYCLE_BASIS_MODE,
-		"SKIP_FEASIBILITY_SOLVE": SKIP_FEASIBILITY_SOLVE,
-		"FIXED_REFERENCE": FIXED_REFERENCE,
-		"DEMAND_RESTRICTION_MODE": DEMAND_RESTRICTION_MODE,
-		"RADIUS_TO_FIXED": RADIUS_TO_FIXED,
-		"DEVIATION_ALPHA": DEVIATION_ALPHA,
-		"HEXALY_LICENSE_PATH": HEXALY_LICENSE_PATH,
-		"HEXALY_TIME_LIMIT": HEXALY_TIME_LIMIT,
-		"HEXALY_STAGNATION_SECONDS": HEXALY_STAGNATION_SECONDS,
-		"HEXALY_STAGNATION_EPS": HEXALY_STAGNATION_EPS,
-		"HEXALY_SEED": HEXALY_SEED,
-		"HEXALY_VERBOSITY": HEXALY_VERBOSITY,
-		"HEXALY_HEAD_MARGIN": HEXALY_HEAD_MARGIN,
-		"HEXALY_USE_PATH_HEAD_BOUNDS": HEXALY_USE_PATH_HEAD_BOUNDS,
-	}
+def _build_measurement_dict(
+    measurement_nodes: Iterable[str],
+    heads: Dict[str, float],
+    total_demand: float,
+    reservoir_node: str | None,
+    reservoir_head: float | None,
+) -> Dict[str, float]:
+    payload = {str(node): float(heads[node]) for node in measurement_nodes if node in heads}
+    payload[TOTAL_DEMAND_KEY] = float(total_demand)
+    if reservoir_node is not None and reservoir_head is not None:
+        payload[str(reservoir_node)] = float(reservoir_head)
+    return payload
 
 
-def _compute_total_demand_from_flows(network, flows: Dict[str, float]) -> float:
-	reservoir_nodes = set(network.reservoirs.keys())
-	junctions = [j for j in network.junctions.keys() if j not in reservoir_nodes]
-	if not junctions:
-		return 0.0
-	values: Dict[str, float] = {j: 0.0 for j in junctions}
-	for pipe_id, pipe in network.pipes.items():
-		q = flows.get(pipe_id, 0.0)
-		if pipe.end_node in values:
-			values[pipe.end_node] += q
-		if pipe.start_node in values:
-			values[pipe.start_node] -= q
-	return float(sum(values.values()))
+def _measurement_heads_for_sites(measurement_data: Dict[str, float], measurement_nodes: Iterable[str]) -> Dict[str, float]:
+    return {
+        str(node): float(measurement_data[str(node)])
+        for node in measurement_nodes
+        if str(node) in measurement_data
+    }
 
 
-def _compute_demands_from_flows(network, flows: Dict[str, float]) -> Dict[str, float]:
-	reservoir_nodes = set(network.reservoirs.keys())
-	junctions = [j for j in network.junctions.keys() if j not in reservoir_nodes]
-	values: Dict[str, float] = {j: 0.0 for j in junctions}
-	for pipe_id, pipe in network.pipes.items():
-		q = flows.get(pipe_id, 0.0)
-		if pipe.end_node in values:
-			values[pipe.end_node] += q
-		if pipe.start_node in values:
-			values[pipe.start_node] -= q
-	return values
+def _measurement_total_demand(measurement_data: Dict[str, float], fallback: float) -> float:
+    return float(measurement_data.get(TOTAL_DEMAND_KEY, fallback))
 
 
+def _measurement_reservoir_head(
+    measurement_data: Dict[str, float],
+    reservoir_node: str | None,
+    fallback: float | None,
+) -> float | None:
+    if reservoir_node is not None and str(reservoir_node) in measurement_data:
+        return float(measurement_data[str(reservoir_node)])
+    return fallback
+
+
+def _solver_index_path(wdn: str) -> str:
+    return os.path.join(ROOT_DIR, "data", wdn, "cache_index.json")
+
+
+def _legacy_index_path() -> str:
+    return os.path.join(ROOT_DIR, "data", "cache_index.json")
+
+
+def _sanitize_hash_payload(payload: Dict[str, object]) -> Dict[str, object]:
+    return {
+        str(k): v
+        for k, v in payload.items()
+        if k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path"}
+    }
+
+
+def _load_index_with_legacy(path: str) -> Dict[str, str]:
+    index = load_index(path, ROOT_DIR)
+    if index:
+        return index
+    return load_index(_legacy_index_path(), ROOT_DIR)
+
+
+def _resolve_cached_output_dir(hash_key: str, wdn: str) -> str | None:
+    index = _load_index_with_legacy(_solver_index_path(wdn))
+    cached_dir = index.get(hash_key)
+    if not cached_dir:
+        return None
+    resolved = cached_dir if os.path.isabs(cached_dir) else os.path.join(ROOT_DIR, cached_dir)
+    if os.path.isdir(resolved):
+        return resolved
+    return None
+
+
+def _write_gui_hash(output_dir: str, solver_hash: str) -> None:
+    try:
+        with open(os.path.join(output_dir, "_gui_hash.txt"), "w", encoding="utf-8") as f:
+            f.write(solver_hash)
+    except OSError:
+        pass
+
+
+def _register_output_dir(hash_key: str | None, output_dir: str | None, wdn: str) -> None:
+    if not hash_key or not output_dir:
+        return
+    resolved = output_dir if os.path.isabs(output_dir) else os.path.join(ROOT_DIR, str(output_dir))
+    if not os.path.isdir(resolved):
+        return
+    index_path = _solver_index_path(wdn)
+    index = _load_index_with_legacy(index_path)
+    rel_output = output_dir if not os.path.isabs(str(output_dir)) else os.path.relpath(str(output_dir), ROOT_DIR)
+    index[str(hash_key)] = rel_output
+    save_index(index_path, index, ROOT_DIR)
+    _write_gui_hash(resolved, str(hash_key))
+
+
+def _run_prerequisite_w_mode(wdn: str, payload: Dict[str, object], hash_key: str) -> str:
+    output_dir = os.path.join("data", wdn, hash_key[:8])
+    config_payload = dict(payload)
+    config_payload["OUTPUT_DIR"] = output_dir
+    config_payload["SOLVER_HASH"] = hash_key
+    cache_dir = os.path.join(ROOT_DIR, ".gui_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    config_path = os.path.join(cache_dir, f"solver-{hash_key}.json")
+    _write_json(config_path, config_payload)
+    proc = subprocess.run(
+        [sys.executable, os.path.join(ROOT_DIR, "inverse.py"), "--config", config_path],
+        capture_output=True,
+        text=True,
+        cwd=ROOT_DIR,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Automatic prerequisite W_d run failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    _register_output_dir(hash_key, output_dir, wdn)
+    resolved = os.path.join(ROOT_DIR, output_dir)
+    if not os.path.isdir(resolved):
+        raise RuntimeError("Automatic prerequisite W_d run completed without output directory.")
+    return resolved
+
+
+def _resolve_measurement_from_w_mode(
+    wdn: str,
+    mode: str,
+    source_mode: str,
+    measurement_nodes: List[str],
+    base_measurement: Dict[str, float],
+) -> Dict[str, float]:
+    if mode == source_mode:
+        return dict(base_measurement)
+
+    if not _RAW_CONFIG:
+        raise ValueError("from_w_* measurement source requires a config-backed solver run.")
+
+    w_payload = _sanitize_hash_payload(dict(_RAW_CONFIG))
+    w_payload["MODE"] = source_mode
+    w_payload["MEASUREMENT_SITES"] = list(measurement_nodes)
+    w_payload["MEASUREMENT_SOURCE"] = "base"
+    w_payload["MEASUREMENT_DATA"] = None
+    w_hash = compute_hash(w_payload)
+    output_dir = _resolve_cached_output_dir(w_hash, wdn)
+    if output_dir is None:
+        output_dir = _run_prerequisite_w_mode(wdn, w_payload, w_hash)
+
+    candidates_path = os.path.join(output_dir, "measurement_candidates.json")
+    if not os.path.isfile(candidates_path):
+        raise ValueError(f"Cached {source_mode} result has no measurement_candidates.json.")
+    payload = _read_json(candidates_path)
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError(f"Cached {source_mode} result has no measurement candidates.")
+    first = candidates[0]
+    if not isinstance(first, dict):
+        raise ValueError(f"Cached {source_mode} result has invalid measurement candidate format.")
+    return _normalize_measurement_dict(first.get("data", {}))
+
+
+def _resolve_center_state_from_w_mode(
+    wdn: str,
+    mode: str,
+    source_mode: str,
+    measurement_nodes: List[str],
+) -> Dict[str, Dict[str, float]] | None:
+    if mode == source_mode:
+        return None
+    if not _RAW_CONFIG:
+        return None
+
+    w_payload = _sanitize_hash_payload(dict(_RAW_CONFIG))
+    w_payload["MODE"] = source_mode
+    w_payload["MEASUREMENT_SITES"] = list(measurement_nodes)
+    w_payload["MEASUREMENT_SOURCE"] = "base"
+    w_payload["MEASUREMENT_DATA"] = None
+    w_hash = compute_hash(w_payload)
+    output_dir = _resolve_cached_output_dir(w_hash, wdn)
+    if output_dir is None:
+        output_dir = _run_prerequisite_w_mode(wdn, w_payload, w_hash)
+
+    candidates_path = os.path.join(output_dir, "measurement_candidates.json")
+    if not os.path.isfile(candidates_path):
+        return None
+    payload = _read_json(candidates_path)
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    first = candidates[0]
+    if not isinstance(first, dict):
+        return None
+    state = first.get("state")
+    if not isinstance(state, dict):
+        return None
+    demands = {str(k): float(v) for k, v in dict(state.get("demands", {})).items()}
+    heads = {str(k): float(v) for k, v in dict(state.get("heads", {})).items()}
+    flows = {str(k): float(v) for k, v in dict(state.get("flows", {})).items()}
+    return {"demands": demands, "heads": heads, "flows": flows}
+
+
+def _resolve_center_state(
+    wdn: str,
+    mode: str,
+    measurement_nodes: List[str],
+    base_demands: Dict[str, float],
+    base_heads: Dict[str, float],
+    base_flows: Dict[str, float],
+) -> Dict[str, Dict[str, float]] | None:
+    source = str(MEASUREMENT_SOURCE or "from_w_d").strip().lower()
+    if source == "base":
+        return {
+            "demands": {str(k): float(v) for k, v in base_demands.items()},
+            "heads": {str(k): float(v) for k, v in base_heads.items()},
+            "flows": {str(k): float(v) for k, v in base_flows.items()},
+        }
+    if source == "from_w_d":
+        return _resolve_center_state_from_w_mode(wdn, mode, "W_d", measurement_nodes)
+    if source == "from_w_h":
+        return _resolve_center_state_from_w_mode(wdn, mode, "W_h", measurement_nodes)
+    return None
+
+
+def _resolve_measurement_data(
+    wdn: str,
+    mode: str,
+    measurement_nodes: List[str],
+    base_heads: Dict[str, float],
+    total_demand: float,
+    reservoir_node: str | None,
+    reservoir_head: float | None,
+) -> Dict[str, float]:
+    base_measurement = _build_measurement_dict(measurement_nodes, base_heads, total_demand, reservoir_node, reservoir_head)
+    source = str(MEASUREMENT_SOURCE or "from_w_d").strip().lower()
+    if source == "base":
+        return base_measurement
+    if source == "custom":
+        return _normalize_measurement_dict(MEASUREMENT_DATA)
+    if source == "from_w_d":
+        return _resolve_measurement_from_w_mode(wdn, mode, "W_d", measurement_nodes, base_measurement)
+    if source == "from_w_h":
+        return _resolve_measurement_from_w_mode(wdn, mode, "W_h", measurement_nodes, base_measurement)
+    raise ValueError(f"Unsupported MEASUREMENT_SOURCE: {MEASUREMENT_SOURCE}")
 
 
 def _compute_norm(values: Iterable[float], norm_p: float) -> float:
-	import math
+    vals = [abs(float(v)) for v in values]
+    if not vals:
+        return 0.0
+    if math.isinf(norm_p):
+        return max(vals)
+    if norm_p <= 0:
+        raise ValueError("NORM must be positive.")
+    return float(sum(v ** norm_p for v in vals) ** (1.0 / norm_p))
 
-	vals = [abs(v) for v in values]
-	if not vals:
-		return 0.0
-	if math.isinf(norm_p):
-		return max(vals)
-	if norm_p <= 0:
-		raise ValueError("NORM must be positive.")
-	acc = 0.0
-	for v in vals:
-		acc += v ** norm_p
-	return acc ** (1.0 / norm_p)
+
+def _compute_demands_from_flows(network, flows: Dict[str, float]) -> Dict[str, float]:
+    reservoir_nodes = set(network.reservoirs.keys())
+    junctions = [j for j in network.junctions.keys() if j not in reservoir_nodes]
+    values: Dict[str, float] = {j: 0.0 for j in junctions}
+    for pipe_id, pipe in network.pipes.items():
+        q = float(flows.get(pipe_id, 0.0))
+        if pipe.end_node in values:
+            values[pipe.end_node] += q
+        if pipe.start_node in values:
+            values[pipe.start_node] -= q
+    return values
+
+
+def _select_measurement_sets(network) -> List[List[str]]:
+    if isinstance(MEASUREMENT_SITES, int):
+        p = int(MEASUREMENT_SITES)
+        candidates = sorted(network.junctions.keys())
+        if p < 0 or p > len(candidates):
+            return []
+        return [list(x) for x in combinations(candidates, p)] if p > 0 else [[]]
+
+    if isinstance(MEASUREMENT_SITES, str):
+        text = MEASUREMENT_SITES.strip()
+        if not text or text == "#0":
+            return [[]]
+        if text.startswith("#"):
+            p = int(text[1:])
+            candidates = sorted(network.junctions.keys())
+            if p < 0 or p > len(candidates):
+                return []
+            return [list(x) for x in combinations(candidates, p)] if p > 0 else [[]]
+        return [[tok.strip() for tok in text.split(",") if tok.strip()]]
+
+    if isinstance(MEASUREMENT_SITES, (list, tuple)):
+        if len(MEASUREMENT_SITES) == 0:
+            return [[]]
+        if all(isinstance(item, (list, tuple)) for item in MEASUREMENT_SITES):
+            return [[str(x) for x in item] for item in MEASUREMENT_SITES]
+        return [[str(x) for x in MEASUREMENT_SITES]]
+
+    return [[]]
+
+
+def _mode_value(
+    mode: str,
+    norm_p: float,
+    result,
+    junctions: List[str],
+    all_nodes: List[str],
+    reference_demands: Dict[str, float],
+    reference_heads: Dict[str, float],
+) -> float:
+    if mode == "W_d":
+        return _compute_norm(
+            (result.demands_a.get(j, 0.0) - result.demands_b.get(j, 0.0) for j in junctions),
+            norm_p,
+        )
+    if mode == "C_d":
+        return _compute_norm(
+            (result.demands_a.get(j, 0.0) - reference_demands.get(j, 0.0) for j in junctions),
+            norm_p,
+        )
+    if mode == "W_h":
+        return _compute_norm(
+            (result.heads_a.get(n, 0.0) - result.heads_b.get(n, 0.0) for n in all_nodes),
+            norm_p,
+        )
+    if mode in {"C_h", "C_h_fixed"}:
+        return _compute_norm(
+            (result.heads_a.get(n, 0.0) - reference_heads.get(n, 0.0) for n in all_nodes),
+            norm_p,
+        )
+    raise ValueError(f"Unsupported MODE: {mode}")
+
+
+def _center_mode_value(
+    mode: str,
+    norm_p: float,
+    result,
+    junctions: List[str],
+    all_nodes: List[str],
+    reference_demands: Dict[str, float],
+    reference_heads: Dict[str, float],
+) -> float:
+    if mode == "C_d":
+        d_a = _compute_norm((result.demands_a.get(j, 0.0) - reference_demands.get(j, 0.0) for j in junctions), norm_p)
+        d_b = _compute_norm((result.demands_b.get(j, 0.0) - reference_demands.get(j, 0.0) for j in junctions), norm_p)
+        return max(d_a, d_b)
+    if mode in {"C_h", "C_h_fixed"}:
+        h_a = _compute_norm((result.heads_a.get(n, 0.0) - reference_heads.get(n, 0.0) for n in all_nodes), norm_p)
+        h_b = _compute_norm((result.heads_b.get(n, 0.0) - reference_heads.get(n, 0.0) for n in all_nodes), norm_p)
+        return max(h_a, h_b)
+    return _mode_value(mode, norm_p, result, junctions, all_nodes, reference_demands, reference_heads)
+
+
+def _build_parameters_snapshot(
+    measurement_nodes: Iterable[str],
+    measurement_sets_count: int,
+    headloss_model_local: str,
+    measurement_data: Dict[str, float] | None,
+) -> Dict[str, object]:
+    return {
+        "WDN": WDN,
+        "WDN_NAME": WDN,
+        "MEASUREMENT_SITES": MEASUREMENT_SITES,
+        "MEASUREMENT_NODES": list(measurement_nodes),
+        "MEASUREMENT_SET_COUNT": measurement_sets_count,
+        "MEASUREMENT_SOURCE": MEASUREMENT_SOURCE,
+        "MEASUREMENT_DATA": measurement_data,
+        "MODE": MODE,
+        "METHOD": METHOD,
+        "NORM": NORM,
+        "DEMAND_LB": DEMAND_LB,
+        "MULTI_STARTS": MULTI_STARTS,
+        "MULTI_START_NOISE": MULTI_START_NOISE,
+        "MULTI_START_NOISE_REL": MULTI_START_NOISE_REL,
+        "MULTI_START_SEED": MULTI_START_SEED,
+        "MEASUREMENT_HEADS_EQUAL_ONLY": MEASUREMENT_HEADS_EQUAL_ONLY,
+        "HEADLOSS_MODEL": HEADLOSS_MODEL,
+        "HEADLOSS_MODEL_LOCAL": headloss_model_local,
+        "HEXALY_LICENSE_PATH": HEXALY_LICENSE_PATH,
+        "HEXALY_TIME_LIMIT": HEXALY_TIME_LIMIT,
+        "HEXALY_SEED": HEXALY_SEED,
+        "HEXALY_VERBOSITY": HEXALY_VERBOSITY,
+        "OUTPUT_DIR": OUTPUT_DIR,
+        "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS,
+    }
 
 
 def main() -> None:
-	global PIPE_BOUNDS
-	parser = argparse.ArgumentParser()
-	parser.add_argument("--config", help="Path to solver config JSON", default=None)
-	args = parser.parse_args()
-	config: Dict[str, object] = {}
-	if args.config:
-		config = _read_json(args.config)
-		_apply_config(config)
-	inp_path = f"./wdn/{WDN}.inp"
-	wdn_name = WDN
-	network = load_inp_network(inp_path)
-	print(f"Using network: {wdn_name} ({inp_path})")
-	resistances = compute_pipe_resistances(network)
-	print(f"Loaded {len(network.nodes)} nodes and {len(network.pipes)} pipes.")
-	first_pipe = next(iter(resistances.values()), None)
-	if first_pipe is not None:
-		print("Example resistance:", first_pipe)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", help="Path to solver config JSON", default=None)
+    args = parser.parse_args()
 
-	scenario_path = _resolve_scenario_path(config)
-	scenario_payload = _read_json(scenario_path)
-	scenario_wdn = str(scenario_payload.get("wdn") or scenario_payload.get("wdn_name") or "")
-	if scenario_wdn and scenario_wdn != WDN:
-		raise ValueError(f"Scenario WDN '{scenario_wdn}' does not match WDN '{WDN}'.")
+    if args.config:
+        _apply_config(_read_json(args.config))
 
-	scenario_demands = {k: float(v) for k, v in scenario_payload["scenario_demands"].items()}
-	scenario_heads = {k: float(v) for k, v in scenario_payload["scenario_heads"].items()}
-	scenario_flows = {k: float(v) for k, v in scenario_payload["scenario_flows"].items()}
+    mode = str(MODE)
+    method = str(METHOD).lower()
+    if mode in {"H_h", "C_h"}:
+        mode = "C_h_fixed"
+    if mode not in {"W_d", "C_d", "W_h", "C_h_fixed"}:
+        raise ValueError("MODE must be one of: W_d, C_d, W_h, C_h_fixed.")
+    if method not in {"xd", "classical"}:
+        raise ValueError("METHOD must be 'xd' or 'classical'.")
 
-	c_bounds = {k: float(v) for k, v in scenario_payload.get("c_bounds", {}).items()}
-	C_bounds = {k: float(v) for k, v in scenario_payload.get("C_bounds", {}).items()}
-	PIPE_BOUNDS = bool(scenario_payload.get("pipe_bounds_enabled", bool(c_bounds or C_bounds)))
-	total_demand = float(sum(scenario_demands.values()))
-	total_demand_from_flows = _compute_total_demand_from_flows(network, scenario_flows)
+    inp_path = f"./wdn/{WDN}.inp"
+    network = load_inp_network(inp_path)
+    print(f"Using network: {WDN} ({inp_path})")
 
-	measurement_sets = _select_measurement_sets(network)
-	if not measurement_sets:
-		raise ValueError("No measurement sets selected. Provide MEASUREMENT_SITES as an integer or a non-empty list.")
-	if isinstance(MEASUREMENT_SITES, int):
-		mode = MEASUREMENT_SUBSET_MODE
-		print(f"Measurement subsets: {len(measurement_sets)} (p={MEASUREMENT_SITES}, mode={mode})")
+    base_demands, base_heads, base_flows = simulate_base_scenario(inp_path=inp_path, simulator="auto")
+    reference_demands = _compute_demands_from_flows(network, base_flows)
 
-	master_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-	pipe_tag = "B" if PIPE_BOUNDS else "NB"
-	summary_rows = []
-	batch_dir = None
-	if len(measurement_sets) > 1:
-		if OUTPUT_DIR:
-			batch_dir = OUTPUT_DIR
-		else:
-			batch_dir = os.path.join("data", wdn_name, f"{pipe_tag}-batch-{master_timestamp}")
-		os.makedirs(batch_dir, exist_ok=True)
-		_write_json(
-			os.path.join(batch_dir, "parameters.json"),
-			_build_parameters_snapshot(measurement_sets_count=len(measurement_sets), scenario_path=scenario_path),
-		)
+    if HEADLOSS_MODEL == "auto":
+        opt = network.options.get("headloss") or network.options.get("hydraulic")
+        model_opt = str(opt).lower() if opt is not None else ""
+        headloss_model_local = "hw" if ("hazen" in model_opt or "hw" in model_opt) else "dw"
+    else:
+        headloss_model_local = str(HEADLOSS_MODEL).lower()
 
-	print(f"PROGRESS_TOTAL: {len(measurement_sets)}", flush=True)
-	for set_idx, measurement_nodes in enumerate(measurement_sets, start=1):
-		print(f"PROGRESS: {set_idx}/{len(measurement_sets)}", flush=True)
-		total_demand_solver = total_demand
-		if SOLVER == "Hexaly_xd" and FIX_TOTAL_DEMAND:
-			total_demand_solver = total_demand_from_flows
-		reference_demands = dict(scenario_demands)
-		reference_demands_from_flows = _compute_demands_from_flows(network, scenario_flows)
-		restriction_mode = DEMAND_RESTRICTION_MODE
-		if restriction_mode is not None:
-			if restriction_mode not in {"radius_to_fixed", "deviation_to_fixed"}:
-				raise ValueError("DEMAND_RESTRICTION_MODE must be None, 'radius_to_fixed', or 'deviation_to_fixed'.")
-		reference_demands_restriction = reference_demands
-		if SOLVER == "Hexaly_xd":
-			reference_demands_restriction = reference_demands_from_flows
-		reference_heads = dict(scenario_heads)
-		reference_flows = dict(scenario_flows)
-		measurement_tag = "_".join(measurement_nodes) if measurement_nodes else "none"
-		if batch_dir:
-			output_dir = os.path.join(batch_dir, measurement_tag)
-		elif OUTPUT_DIR:
-			output_dir = OUTPUT_DIR
-		else:
-			output_dir = os.path.join("data", wdn_name, f"{pipe_tag}-{measurement_tag}-{master_timestamp}")
-		os.makedirs(output_dir, exist_ok=True)
-		print(f"Saving results to: {output_dir}")
-		model_opt = ""
-		if HEADLOSS_MODEL == "auto":
-			opt = network.options.get("headloss") or network.options.get("hydraulic")
-			model_opt = str(opt).lower() if opt is not None else ""
-			if "hazen" in model_opt or "hw" in model_opt:
-				HEADLOSS_MODEL_LOCAL = "hw"
-			else:
-				HEADLOSS_MODEL_LOCAL = "dw"
-		else:
-			HEADLOSS_MODEL_LOCAL = HEADLOSS_MODEL
-		model_note = model_opt if model_opt else "n/a"
-		print(f"Headloss model: {HEADLOSS_MODEL_LOCAL} (options: {model_note})")
+    if headloss_model_local == "hw":
+        pipe_res = {pid: vals["r_e"] for pid, vals in compute_pipe_resistances_hw(network).items()}
+        headloss_n = 1.852
+    else:
+        pipe_res = {pid: vals["r_e"] for pid, vals in compute_pipe_resistances(network).items()}
+        headloss_n = 2.0
 
-		_write_json(
-			os.path.join(output_dir, "parameters.json"),
-			_build_parameters_snapshot(
-				headloss_model_local=HEADLOSS_MODEL_LOCAL,
-				measurement_nodes=measurement_nodes,
-				measurement_sets_count=len(measurement_sets),
-				scenario_path=scenario_path,
-			),
-		)
+    reservoir_node = next(iter(network.reservoirs.keys()), None)
+    reservoir_head = base_heads.get(reservoir_node) if reservoir_node else None
 
-		_write_json(
-			os.path.join(output_dir, "metadata.json"),
-			{
-				"WDN": WDN,
-				"WDN_NAME": WDN,
-				"SCENARIO": SCENARIO,
-				"SCENARIO_FILE": scenario_path,
-				"OUTPUT_DIR": OUTPUT_DIR,
-				"MEASUREMENT_SITES": measurement_nodes,
-				"PIPE_BOUNDS": PIPE_BOUNDS,
-				"HEADLOSS_MODEL": HEADLOSS_MODEL_LOCAL,
-				"SOLVER": SOLVER,
-				"GLOBAL_SOLVER": None,
-				"NORM": NORM,
-				"DEMAND_LB": DEMAND_LB,
-				"USE_RESERVOIR_OUTFLOW_CONSTRAINT": USE_RESERVOIR_OUTFLOW_CONSTRAINT,
-				"FIX_TOTAL_DEMAND": FIX_TOTAL_DEMAND,
-				"MEASUREMENT_HEADS_EQUAL_ONLY": MEASUREMENT_HEADS_EQUAL_ONLY,
-				"MULTI_STARTS": MULTI_STARTS,
-				"MULTI_START_NOISE": MULTI_START_NOISE,
-				"MULTI_START_NOISE_REL": MULTI_START_NOISE_REL,
-				"DEMAND_RESTRICTION_MODE": DEMAND_RESTRICTION_MODE,
-				"RADIUS_TO_FIXED": RADIUS_TO_FIXED,
-				"DEVIATION_ALPHA": DEVIATION_ALPHA,
-				"timestamp": master_timestamp,
-				"output_dir": output_dir,
-			},
-		)
-		if PIPE_BOUNDS:
-			_write_json(
-				os.path.join(output_dir, "c_bounds.json"),
-				{"c_bounds": c_bounds, "C_bounds": C_bounds},
-			)
+    total_demand = float(sum(reference_demands.values()))
+    sensor_sets = _select_measurement_sets(network)
+    if not sensor_sets:
+        raise ValueError("No measurement sets selected.")
 
-		sensor_heads = {node_id: scenario_heads[node_id] for node_id in measurement_nodes if node_id in scenario_heads}
-		for res_id in network.reservoirs.keys():
-			if res_id in scenario_heads:
-				sensor_heads[res_id] = scenario_heads[res_id]
+    master_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    batch_dir = None
+    if len(sensor_sets) > 1:
+        batch_dir = OUTPUT_DIR or os.path.join("data", WDN, f"batch-{master_timestamp}")
+        os.makedirs(batch_dir, exist_ok=True)
+        _write_json(
+            os.path.join(batch_dir, "parameters.json"),
+            _build_parameters_snapshot([], len(sensor_sets), headloss_model_local, None),
+        )
 
-		initial_guess = SolverResult(
-			status="init",
-			demands=scenario_demands,
-			heads=scenario_heads,
-			flows=scenario_flows,
-		)
+    print(f"PROGRESS_TOTAL: {len(sensor_sets)}", flush=True)
+    summary_rows: List[Dict[str, object]] = []
 
-		if HEADLOSS_MODEL_LOCAL == "hw":
-			pipe_resistances = {pid: vals["r_e"] for pid, vals in compute_pipe_resistances_hw(network).items()}
-			headloss_n = 1.852
-		else:
-			pipe_resistances = {pid: vals["r_e"] for pid, vals in resistances.items()}
-			headloss_n = 2.0
+    rng = np.random.default_rng(MULTI_START_SEED)
+    junctions = list(network.junctions.keys())
+    all_nodes = list(network.nodes.keys())
 
-		reservoir_node = next(iter(network.reservoirs.keys()), None)
-		if SOLVER == "Hexaly_xd":
-			_print_xd_paths_cycles(
-				network,
-				pipe_resistances,
-				reservoir_node,
-				measurement_nodes,
-				cycle_basis_mode=XD_CYCLE_BASIS_MODE,
-			)
-		reservoir_head = None
-		if reservoir_node is not None:
-			reservoir_head = scenario_heads.get(reservoir_node, None)
-		reservoir_outflow = 0.0
-		if reservoir_node is not None:
-			for pid, pipe in network.pipes.items():
-				q = scenario_flows.get(pid, 0.0)
-				if pipe.start_node == reservoir_node:
-					reservoir_outflow += q
-				if pipe.end_node == reservoir_node:
-					reservoir_outflow -= q
-		if not USE_RESERVOIR_OUTFLOW_CONSTRAINT:
-			reservoir_outflow = None
-		preferred_flow_sign = {pid: q for pid, q in scenario_flows.items()}
+    for set_idx, measurement_nodes in enumerate(sensor_sets, start=1):
+        print(f"PROGRESS: {set_idx}/{len(sensor_sets)}", flush=True)
 
-		if SOLVER == "Hexaly_xd" and CHECK_XD_BASE_FEASIBILITY:
-			check = check_xd_feasibility_from_flows(
-				network=network,
-				pipe_resistances=pipe_resistances,
-				flows=scenario_flows,
-				c_bounds=c_bounds if PIPE_BOUNDS else None,
-				C_bounds=C_bounds if PIPE_BOUNDS else None,
-				reservoir_node=reservoir_node,
-				measurement_nodes=measurement_nodes,
-				demand_lb=DEMAND_LB,
-				total_demand=total_demand_solver if FIX_TOTAL_DEMAND else None,
-				reservoir_outflow=reservoir_outflow,
-				headloss_n=headloss_n,
-				cycle_basis_mode=XD_CYCLE_BASIS_MODE,
-			)
-			print("XD base scenario feasibility check:")
-			for key, value in check.items():
-				print(f"  {key}: {value:.3e}")
+        measurement_tag = "_".join(measurement_nodes) if measurement_nodes else "none"
+        if batch_dir:
+            output_dir = os.path.join(batch_dir, measurement_tag)
+        elif OUTPUT_DIR:
+            output_dir = str(OUTPUT_DIR)
+        else:
+            output_dir = os.path.join("data", WDN, f"{measurement_tag}-{master_timestamp}")
+        os.makedirs(output_dir, exist_ok=True)
 
-		if SOLVER == "Hexaly_xd" and CHECK_XD_CYCLE_BOUNDS and PIPE_BOUNDS:
-			cycle_check = check_xd_cycle_feasibility_from_bounds(
-				network=network,
-				pipe_resistances=pipe_resistances,
-				c_bounds=c_bounds if PIPE_BOUNDS else None,
-				C_bounds=C_bounds if PIPE_BOUNDS else None,
-				initial_guess=initial_guess,
-				headloss_n=headloss_n,
-				cycle_basis_mode=XD_CYCLE_BASIS_MODE,
-				max_examples=5,
-			)
-			print("XD cycle feasibility from bounds:")
-			print(
-				"  cycles={}, infeasible={}, max_violation={:.3e}".format(
-					cycle_check["cycle_count"],
-					cycle_check["infeasible_count"],
-					cycle_check["max_violation"],
-				)
-			)
-			for row in cycle_check.get("examples", []):
-				print(
-					"  cycle #{cycle_index}: min_sum={min_sum:.3e}, max_sum={max_sum:.3e}, size={size}".format(
-						**row
-					)
-				)
+        _write_json(
+            os.path.join(output_dir, "parameters.json"),
+            _build_parameters_snapshot(measurement_nodes, len(sensor_sets), headloss_model_local, None),
+        )
 
-		if PIPE_BOUNDS:
-			base_violation = check_xd_feasibility_from_flows(
-				network=network,
-				pipe_resistances=pipe_resistances,
-				flows=scenario_flows,
-				c_bounds=c_bounds,
-				C_bounds=C_bounds,
-				reservoir_node=reservoir_node,
-				measurement_nodes=measurement_nodes,
-				demand_lb=DEMAND_LB,
-				total_demand=total_demand_solver if FIX_TOTAL_DEMAND else None,
-				reservoir_outflow=reservoir_outflow,
-				headloss_n=headloss_n,
-				cycle_basis_mode=XD_CYCLE_BASIS_MODE,
-			)
-			print("Base scenario feasibility with current bounds:")
-			for key, value in base_violation.items():
-				print(f"  {key}: {value:.3e}")
+        measurement_data = _resolve_measurement_data(
+            WDN,
+            mode,
+            list(measurement_nodes),
+            base_heads,
+            total_demand,
+            reservoir_node,
+            reservoir_head,
+        )
+        sensor_heads = _measurement_heads_for_sites(measurement_data, measurement_nodes)
+        reservoir_head_local = _measurement_reservoir_head(measurement_data, reservoir_node, reservoir_head)
+        total_demand_local = _measurement_total_demand(measurement_data, total_demand)
+        if reservoir_node and reservoir_head_local is not None:
+            sensor_heads[reservoir_node] = float(reservoir_head_local)
 
-		if SKIP_FEASIBILITY_SOLVE:
-			print("Skipping feasibility solve (using scenario flows/heads as initial guess).")
-		else:
-			feasible = solve_feasibility(
-				network=network,
-				sensor_heads=sensor_heads,
-				measurement_nodes=measurement_nodes,
-				measurement_heads_equal_only=MEASUREMENT_HEADS_EQUAL_ONLY,
-				pipe_primary=set(),
-				pipe_secondary=set(),
-				c_secondary={},
-				C_primary={},
-				pipe_resistances=pipe_resistances,
-				preferred_flow_sign=preferred_flow_sign,
-				energy_head=reservoir_head,
-				reservoir_node=reservoir_node,
-				reservoir_outflow=reservoir_outflow,
-				c_bounds=c_bounds if PIPE_BOUNDS else None,
-				C_bounds=C_bounds if PIPE_BOUNDS else None,
-				initial_guess=initial_guess,
-			)
-			print("Feasibility result:")
-			print(
-				f"success={feasible.success}, max_violation={feasible.max_violation:.3e}, min_demand_viol={feasible.min_demand_viol:.3e}",
-				flush=True,
-			)
-			initial_guess = SolverResult(
-				status="feasible",
-				demands=scenario_demands,
-				heads=feasible.heads,
-				flows=feasible.flows,
-			)
+        _write_json(
+            os.path.join(output_dir, "parameters.json"),
+            _build_parameters_snapshot(measurement_nodes, len(sensor_sets), headloss_model_local, measurement_data),
+        )
 
-		import numpy as np
+        center_state = _resolve_center_state(
+            WDN,
+            mode,
+            list(measurement_nodes),
+            reference_demands,
+            base_heads,
+            base_flows,
+        )
+        reference_demands_local = (
+            center_state.get("demands", reference_demands) if center_state is not None else reference_demands
+        )
+        reference_heads_local = (
+            center_state.get("heads", base_heads) if center_state is not None else base_heads
+        )
 
-		solver_mode = SOLVER
-		try:
-			import hexaly.optimizer  # noqa: F401
-		except Exception as exc:
-			raise RuntimeError(f"Hexaly solver unavailable ({exc}).") from exc
+        base_guess = SolverResult(
+            status="base",
+            demands=dict(reference_demands),
+            heads=dict(base_heads),
+            flows=dict(base_flows),
+        )
 
-		multi_starts = MULTI_STARTS
-		multi_noise_abs = MULTI_START_NOISE
-		multi_noise_rel = MULTI_START_NOISE_REL
+        minimize_mode = mode in {"C_d", "C_h", "C_h_fixed"}
+        best_value = float("inf") if minimize_mode else -float("inf")
+        best_result = None
+        best_center_result = None
+        runs = []
 
-		rng = np.random.default_rng(MULTI_START_SEED)
-		runs = []
-		best = None
-		unique_radii = set()
+        for run_idx in range(max(1, int(MULTI_STARTS))):
+            q0 = {k: float(v) for k, v in base_guess.flows.items()}
+            h0 = {k: float(v) for k, v in base_guess.heads.items()}
 
-		for run_idx in range(max(1, multi_starts)):
-			q0 = {k: float(v) for k, v in initial_guess.flows.items()}
-			h0 = {k: float(v) for k, v in initial_guess.heads.items()}
-			if multi_starts > 1:
-				for k in q0:
-					scale = max(1.0, abs(q0[k]))
-					q0[k] = q0[k] + (multi_noise_abs + multi_noise_rel * scale) * rng.standard_normal()
-				for k in h0:
-					scale = max(1.0, abs(h0[k]))
-					h0[k] = h0[k] + (multi_noise_abs + multi_noise_rel * scale) * rng.standard_normal()
+            if int(MULTI_STARTS) > 1:
+                for k in q0:
+                    scale = max(1.0, abs(q0[k]))
+                    q0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
+                for k in h0:
+                    scale = max(1.0, abs(h0[k]))
+                    h0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
 
-			run_guess = SolverResult(status="ms", demands=initial_guess.demands, heads=h0, flows=q0)
-			hexaly_seed = None
-			if HEXALY_SEED is not None:
-				hexaly_seed = int(HEXALY_SEED) + int(run_idx)
-			else:
-				hexaly_seed = int(rng.integers(1, 2**31 - 1))
-			if solver_mode == "Hexaly_xd":
-				fixed_b = reference_demands_from_flows if FIXED_REFERENCE else None
-				distance_res = solve_max_demand_distance_xd_hexaly(
-					network=network,
-					sensor_heads=sensor_heads,
-					pipe_resistances=pipe_resistances,
-					c_bounds=c_bounds if PIPE_BOUNDS else None,
-					C_bounds=C_bounds if PIPE_BOUNDS else None,
-					reservoir_node=reservoir_node,
-					reservoir_head=reservoir_head,
-					reservoir_outflow=reservoir_outflow,
-					initial_guess=run_guess,
-					norm_p=NORM,
-					demand_lb=DEMAND_LB,
-					total_demand=total_demand_solver if FIX_TOTAL_DEMAND else None,
-					measurement_nodes=measurement_nodes,
-					measurement_heads_equal_only=MEASUREMENT_HEADS_EQUAL_ONLY,
-					headloss_n=headloss_n,
-					cycle_basis_mode=XD_CYCLE_BASIS_MODE,
-					fixed_demands_b=fixed_b,
-					reference_demands=reference_demands_restriction,
-					restriction_mode=restriction_mode,
-					radius_to_fixed=RADIUS_TO_FIXED,
-					deviation_alpha=DEVIATION_ALPHA,
-					license_path=HEXALY_LICENSE_PATH,
-					time_limit=HEXALY_TIME_LIMIT,
-					seed=hexaly_seed,
-					verbosity=HEXALY_VERBOSITY,
-					)
-			elif solver_mode == "Hexaly":
-				distance_res = solve_max_demand_distance_hexaly(
-					network=network,
-					sensor_heads=sensor_heads,
-					pipe_resistances=pipe_resistances,
-					c_bounds=c_bounds if PIPE_BOUNDS else None,
-					C_bounds=C_bounds if PIPE_BOUNDS else None,
-					reservoir_node=reservoir_node,
-					reservoir_outflow=reservoir_outflow,
-					initial_guess=run_guess,
-					norm_p=NORM,
-					demand_lb=DEMAND_LB,
-					total_demand=total_demand_solver if FIX_TOTAL_DEMAND else None,
-					measurement_nodes=measurement_nodes,
-					measurement_heads_equal_only=MEASUREMENT_HEADS_EQUAL_ONLY,
-					reference_demands=reference_demands_restriction,
-					restriction_mode=restriction_mode,
-					radius_to_fixed=RADIUS_TO_FIXED,
-					deviation_alpha=DEVIATION_ALPHA,
-					license_path=HEXALY_LICENSE_PATH,
-					time_limit=HEXALY_TIME_LIMIT,
-					seed=hexaly_seed,
-							verbosity=HEXALY_VERBOSITY,
-							stagnation_seconds=HEXALY_STAGNATION_SECONDS,
-							stagnation_eps=HEXALY_STAGNATION_EPS,
-							head_margin=HEXALY_HEAD_MARGIN,
-							use_path_head_bounds=HEXALY_USE_PATH_HEAD_BOUNDS,
-						)
-			elif solver_mode == "Hexaly_xd_chebyshev":
-				raise ValueError(
-					"SOLVER='Hexaly_xd_chebyshev' is disabled: the current single-level NLP uses an optimistic "
-					"min_{c,d} distance form and does not represent worst-case class ambiguity. Use SOLVER='Hexaly_xd'."
-				)
-			else:
-				raise ValueError(f"Unsupported SOLVER: {solver_mode}")
-			diffs = []
-			for node_id in network.junctions.keys():
-				da = distance_res.demands_a.get(node_id, 0.0)
-				db = distance_res.demands_b.get(node_id, 0.0)
-				diffs.append(da - db)
-			radius = _compute_norm(diffs, NORM)
+            run_guess = SolverResult(status="ms", demands=base_guess.demands, heads=h0, flows=q0)
+            hexaly_seed = int(HEXALY_SEED) + run_idx
 
-			runs.append(
-				{
-					"run": run_idx,
-					"radius": radius,
-					"success": distance_res.success,
-					"max_violation": distance_res.max_violation,
-					"min_demand_viol": distance_res.min_demand_viol,
-					"start_flows": q0,
-					"start_heads": h0,
-				}
-			)
-			unique_radii.add(round(radius, 8))
+            solve_with_xd = method == "xd" and mode in {"W_d", "C_d"}
+            if mode in {"W_h", "C_h", "C_h_fixed"}:
+                solve_with_xd = False
 
-			if best is None or radius > best[0]:
-				best = (radius, distance_res)
+            if solve_with_xd:
+                fixed_b = reference_demands if mode == "C_d" else None
+                result = solve_max_demand_distance_xd_hexaly(
+                    network=network,
+                    sensor_heads=sensor_heads,
+                    pipe_resistances=pipe_res,
+                    c_bounds=None,
+                    C_bounds=None,
+                    reservoir_node=reservoir_node,
+                    reservoir_head=reservoir_head_local,
+                    reservoir_outflow=None,
+                    initial_guess=run_guess,
+                    norm_p=float(NORM),
+                    demand_lb=float(DEMAND_LB),
+                    total_demand=total_demand_local,
+                    measurement_nodes=measurement_nodes,
+                    measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
+                    match_reservoir_outflow_between_pairs=bool(MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS),
+                    headloss_n=headloss_n,
+                    cycle_basis_mode="planar",
+                    fixed_demands_b=fixed_b,
+                    reference_demands=reference_demands_local,
+                    restriction_mode=None,
+                    radius_to_fixed=None,
+                    deviation_alpha=None,
+                    license_path=str(HEXALY_LICENSE_PATH),
+                    time_limit=int(HEXALY_TIME_LIMIT),
+                    seed=hexaly_seed,
+                    verbosity=int(HEXALY_VERBOSITY),
+                )
+            else:
+                result = solve_max_demand_distance_hexaly(
+                    network=network,
+                    sensor_heads=sensor_heads,
+                    pipe_resistances=pipe_res,
+                    c_bounds=None,
+                    C_bounds=None,
+                    reservoir_node=reservoir_node,
+                    reservoir_outflow=None,
+                    initial_guess=run_guess,
+                    norm_p=float(NORM),
+                    demand_lb=float(DEMAND_LB),
+                    total_demand=total_demand_local,
+                    measurement_nodes=measurement_nodes,
+                    measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
+                    reference_demands=reference_demands_local,
+                    restriction_mode=None,
+                    radius_to_fixed=None,
+                    deviation_alpha=None,
+                    license_path=str(HEXALY_LICENSE_PATH),
+                    time_limit=int(HEXALY_TIME_LIMIT),
+                    seed=hexaly_seed,
+                    verbosity=int(HEXALY_VERBOSITY),
+                )
 
-			best_radius, best_res = best
-			print("Demand distance result:")
-			print(f"best radius: {best_radius:.8f}")
-			print(f"unique local optima (by radius): {len(unique_radii)}")
+            center_result = None
+            if mode == "C_h_fixed":
+                center_result = solve_head_center_in_class_hexaly(
+                    network=network,
+                    sensor_heads=sensor_heads,
+                    pipe_resistances=pipe_res,
+                    reference_heads_a=result.heads_a,
+                    reference_heads_b=result.heads_b,
+                    c_bounds=None,
+                    C_bounds=None,
+                    reservoir_node=reservoir_node,
+                    reservoir_outflow=None,
+                    initial_guess=run_guess,
+                    norm_p=float(NORM),
+                    demand_lb=float(DEMAND_LB),
+                    total_demand=total_demand_local,
+                    license_path=str(HEXALY_LICENSE_PATH),
+                    time_limit=int(HEXALY_TIME_LIMIT),
+                    seed=hexaly_seed,
+                    verbosity=int(HEXALY_VERBOSITY),
+                )
+                mode_value = float(center_result.objective) if center_result.objective is not None else float("inf")
+            else:
+                mode_value = _center_mode_value(
+                    mode=mode,
+                    norm_p=float(NORM),
+                    result=result,
+                    junctions=junctions,
+                    all_nodes=all_nodes,
+                    reference_demands=reference_demands_local,
+                    reference_heads=reference_heads_local,
+                )
+            runs.append(
+                {
+                    "run": run_idx,
+                    "mode_value": mode_value,
+                    "success": bool(result.success),
+                    "max_violation": float(result.max_violation),
+                    "min_demand_viol": float(result.min_demand_viol),
+                    "center_success": bool(center_result.success) if center_result is not None else None,
+                }
+            )
+            if (
+                best_result is None
+                or (not minimize_mode and mode_value > best_value)
+                or (minimize_mode and mode_value < best_value)
+            ):
+                best_value = mode_value
+                best_result = result
+                best_center_result = center_result
 
+        if best_result is None:
+            raise RuntimeError("No solver result produced.")
 
-			res_demand_a = -sum(best_res.demands_a.values())
-			res_demand_b = -sum(best_res.demands_b.values())
-			_write_json(
-				os.path.join(output_dir, "demand_distance.json"),
-				{
-					"demands_a": {**best_res.demands_a, str(reservoir_node): res_demand_a} if reservoir_node else best_res.demands_a,
-					"demands_b": {**best_res.demands_b, str(reservoir_node): res_demand_b} if reservoir_node else best_res.demands_b,
-					"heads_a": best_res.heads_a,
-					"heads_b": best_res.heads_b,
-					"flows_a": best_res.flows_a,
-					"flows_b": best_res.flows_b,
-					"radius": best_radius,
-					"norm": NORM,
-					"p": len(measurement_nodes),
-					"max_violation": best_res.max_violation,
-					"min_demand_viol": best_res.min_demand_viol,
-					"objective": best_res.objective,
-					"solver_status": best_res.solver_status,
-					"best_bound": best_res.best_bound,
-				},
-			)
-			_write_json(
-				os.path.join(output_dir, "demand_distance_multistart.json"),
-				{
-					"runs": runs,
-					"unique_local_optima": len(unique_radii),
-					"best_radius": best_radius,
-					"norm": NORM,
-				},
-			)
-			if DEBUG_DUMP_ALWAYS:
-				try:
-					report = debug_snapshot._build_report(
-						output_dir=output_dir,
-						eps=DEBUG_DUMP_EPS,
-						use_solution_resistance=False,
-					)
-					debug_snapshot._write_json(
-						os.path.join(output_dir, "debug_dump.json"),
-						report,
-					)
-				except Exception as exc:
-					print(f"WARNING: debug dump failed ({exc})")
+        demand_w = _mode_value("W_d", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
+        demand_c = _center_mode_value("C_d", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
+        head_w = _mode_value("W_h", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
+        head_c = _center_mode_value("C_h", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
 
-		summary_rows.append(
-			{
-				"measurement_sites": measurement_nodes,
-				"measurement_count": len(measurement_nodes),
-				"radius": best_radius,
-				"success": best_res.success,
-				"max_violation": best_res.max_violation,
-				"min_demand_viol": best_res.min_demand_viol,
-				"objective": best_res.objective,
-				"solver_status": best_res.solver_status,
-				"best_bound": best_res.best_bound,
-				"output_dir": output_dir,
-			}
-		)
+        out_demands_a = dict(best_result.demands_a)
+        out_demands_b = dict(best_result.demands_b)
+        out_heads_a = dict(best_result.heads_a)
+        out_heads_b = dict(best_result.heads_b)
+        out_flows_a = dict(best_result.flows_a)
+        out_flows_b = dict(best_result.flows_b)
+        center_side = None
+        center_symbol = None
+        if mode == "C_h_fixed" and best_center_result is not None and best_center_result.heads_a:
+            center_heads = dict(best_center_result.heads_a)
+            center_demands = dict(best_center_result.demands_a)
+            center_flows = dict(best_center_result.flows_a)
+            dist_a = _compute_norm((best_result.heads_a.get(n, 0.0) - center_heads.get(n, 0.0) for n in all_nodes), float(NORM))
+            dist_b = _compute_norm((best_result.heads_b.get(n, 0.0) - center_heads.get(n, 0.0) for n in all_nodes), float(NORM))
+            choose_a = dist_a >= dist_b
+            if choose_a:
+                out_demands_a = dict(best_result.demands_a)
+                out_heads_a = dict(best_result.heads_a)
+                out_flows_a = dict(best_result.flows_a)
+            else:
+                out_demands_a = dict(best_result.demands_b)
+                out_heads_a = dict(best_result.heads_b)
+                out_flows_a = dict(best_result.flows_b)
+            out_demands_b = center_demands
+            out_heads_b = center_heads
+            out_flows_b = center_flows
+            center_side = "green"
+            center_symbol = "g"
+            best_value = float(best_center_result.objective or 0.0)
+            head_c = best_value
+        elif mode in {"C_h", "C_h_fixed"} and center_state is not None and center_state.get("heads"):
+            ref_heads = center_state.get("heads", {})
+            dist_a = _compute_norm((best_result.heads_a.get(n, 0.0) - ref_heads.get(n, 0.0) for n in all_nodes), float(NORM))
+            dist_b = _compute_norm((best_result.heads_b.get(n, 0.0) - ref_heads.get(n, 0.0) for n in all_nodes), float(NORM))
+            choose_a = dist_a >= dist_b
+            if choose_a:
+                out_demands_a = dict(best_result.demands_a)
+                out_heads_a = dict(best_result.heads_a)
+                out_flows_a = dict(best_result.flows_a)
+            else:
+                out_demands_a = dict(best_result.demands_b)
+                out_heads_a = dict(best_result.heads_b)
+                out_flows_a = dict(best_result.flows_b)
+            out_demands_b = dict(center_state.get("demands", out_demands_b))
+            out_heads_b = dict(center_state.get("heads", out_heads_b))
+            out_flows_b = dict(center_state.get("flows", out_flows_b))
+            center_side = "green"
+            center_symbol = "g"
+            best_value = head_c
 
-	if summary_rows:
-		sizes = {row.get("measurement_count") for row in summary_rows}
-		multi_sizes = len({s for s in sizes if s is not None}) > 1
-		if not multi_sizes:
-			for row in summary_rows:
-				row.pop("measurement_count", None)
+        if mode == "C_d" and center_state is not None and center_state.get("demands"):
+            ref_demands = center_state.get("demands", {})
+            dist_a = _compute_norm((best_result.demands_a.get(j, 0.0) - ref_demands.get(j, 0.0) for j in junctions), float(NORM))
+            dist_b = _compute_norm((best_result.demands_b.get(j, 0.0) - ref_demands.get(j, 0.0) for j in junctions), float(NORM))
+            choose_a = dist_a >= dist_b
+            if choose_a:
+                out_demands_a = dict(best_result.demands_a)
+                out_heads_a = dict(best_result.heads_a)
+                out_flows_a = dict(best_result.flows_a)
+            else:
+                out_demands_a = dict(best_result.demands_b)
+                out_heads_a = dict(best_result.heads_b)
+                out_flows_a = dict(best_result.flows_b)
+            out_demands_b = dict(center_state.get("demands", out_demands_b))
+            out_heads_b = dict(center_state.get("heads", out_heads_b))
+            out_flows_b = dict(center_state.get("flows", out_flows_b))
+            center_side = "green"
+            center_symbol = "c"
+            best_value = demand_c
 
-		def _summary_sort_key(row: Dict[str, object]) -> tuple[int, bool, float]:
-			count = row.get("measurement_count")
-			count_val = int(count) if isinstance(count, int) else 0
-			val = row.get("radius")
-			if val is None:
-				return (count_val, True, float("inf"))
-			try:
-				return (count_val, False, float(val))
-			except (TypeError, ValueError):
-				return (count_val, True, float("inf"))
+        _write_json(
+            os.path.join(output_dir, "demand_distance.json"),
+            {
+                "demands_a": out_demands_a,
+                "demands_b": out_demands_b,
+                "heads_a": out_heads_a,
+                "heads_b": out_heads_b,
+                "flows_a": out_flows_a,
+                "flows_b": out_flows_b,
+                "radius": best_value,
+                "mode": mode,
+                "method": method,
+                "W_d": demand_w,
+                "C_d": demand_c,
+                "W_h": head_w,
+                "C_h": head_c,
+                "norm": float(NORM),
+                "p": len(measurement_nodes),
+                "max_violation": float(best_result.max_violation),
+                "min_demand_viol": float(best_result.min_demand_viol),
+                "objective": best_result.objective,
+                "solver_status": best_result.solver_status,
+                "best_bound": best_result.best_bound,
+                "measurement_source": MEASUREMENT_SOURCE,
+                "measurement_data": measurement_data,
+                "center_side": center_side,
+                "center_symbol": center_symbol,
+            },
+        )
 
-		summary_rows = sorted(summary_rows, key=_summary_sort_key)
-		summary_root = batch_dir if batch_dir else "data"
-		summary_path = os.path.join(summary_root, f"{wdn_name}-measurement-summary-{master_timestamp}.json")
-		_write_json(summary_path, {"results": summary_rows})
-		try:
-			import csv
-			csv_path = os.path.join(summary_root, f"{wdn_name}-measurement-summary-{master_timestamp}.csv")
-			with open(csv_path, "w", encoding="utf-8", newline="") as f:
-				writer = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
-				writer.writeheader()
-				writer.writerows(summary_rows)
-			print(f"Wrote measurement summary to: {summary_path}")
-			print(f"GUI_SUMMARY_CSV: {csv_path}")
-		except Exception as exc:
-			print(f"WARNING: failed to write CSV summary ({exc})")
+        measurement_candidates = []
+        if mode in {"W_d", "W_h"}:
+            measurement_candidates = [
+                {
+                    "label": "a",
+                    "data": _build_measurement_dict(measurement_nodes, best_result.heads_a, total_demand_local, reservoir_node, reservoir_head_local),
+                    "state": {
+                        "demands": best_result.demands_a,
+                        "heads": best_result.heads_a,
+                        "flows": best_result.flows_a,
+                    },
+                },
+                {
+                    "label": "b",
+                    "data": _build_measurement_dict(measurement_nodes, best_result.heads_b, total_demand_local, reservoir_node, reservoir_head_local),
+                    "state": {
+                        "demands": best_result.demands_b,
+                        "heads": best_result.heads_b,
+                        "flows": best_result.flows_b,
+                    },
+                },
+            ]
+        _write_json(
+            os.path.join(output_dir, "measurement_candidates.json"),
+            {
+                "mode": mode,
+                "measurement_source": MEASUREMENT_SOURCE,
+                "sites": list(measurement_nodes),
+                "used_measurement": measurement_data,
+                "candidates": measurement_candidates,
+            },
+        )
+        _write_json(
+            os.path.join(output_dir, "demand_distance_multistart.json"),
+            {
+                "runs": runs,
+                "best_mode_value": best_value,
+                "mode": mode,
+                "method": method,
+            },
+        )
+
+        summary_rows.append(
+            {
+                "measurement_sites": measurement_nodes,
+                "measurement_count": len(measurement_nodes),
+                "radius": best_value,
+                "mode": mode,
+                "method": method,
+                "W_d": demand_w,
+                "C_d": demand_c,
+                "W_h": head_w,
+                "C_h": head_c,
+                "success": bool(best_result.success),
+                "max_violation": float(best_result.max_violation),
+                "min_demand_viol": float(best_result.min_demand_viol),
+                "objective": best_result.objective,
+                "solver_status": best_result.solver_status,
+                "best_bound": best_result.best_bound,
+                "output_dir": output_dir,
+            }
+        )
+
+    if summary_rows:
+        summary_rows = sorted(summary_rows, key=lambda r: (int(r["measurement_count"]), float(r["radius"])))
+        summary_root = batch_dir if batch_dir else "data"
+        summary_json = os.path.join(summary_root, f"{WDN}-measurement-summary-{master_timestamp}.json")
+        summary_csv = os.path.join(summary_root, f"{WDN}-measurement-summary-{master_timestamp}.csv")
+        _write_json(summary_json, {"results": summary_rows})
+
+        with open(summary_csv, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(summary_rows)
+
+        print(f"Wrote measurement summary to: {summary_json}")
+        print(f"GUI_SUMMARY_CSV: {summary_csv}")
+
+    _register_output_dir(SOLVER_HASH, OUTPUT_DIR, WDN)
 
 
 if __name__ == "__main__":
-	main()
+    main()

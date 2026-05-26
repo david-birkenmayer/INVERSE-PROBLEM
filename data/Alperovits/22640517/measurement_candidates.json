@@ -1,0 +1,13 @@
+{
+  "candidates": [],
+  "measurement_source": "from_w_d",
+  "mode": "C_d",
+  "sites": [
+    "1"
+  ],
+  "used_measurement": {
+    "-1": 1.1200000047683716,
+    "1": 207.8217484452243,
+    "7": 210.0
+  }
+}

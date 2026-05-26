@@ -1,0 +1,24 @@
+{
+  "results": [
+    {
+      "C_d": 0.8818407937181559,
+      "C_h": 0.15502864878404737,
+      "W_d": 1.534856531194481,
+      "W_h": 0.22497922132557557,
+      "best_bound": null,
+      "max_violation": 3.078388342014904e-07,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "1"
+      ],
+      "method": "xd",
+      "min_demand_viol": -2.881817667267352e-07,
+      "mode": "W_h",
+      "objective": 2.355784571350355,
+      "output_dir": "data/Alperovits/f30e2165",
+      "radius": 0.22497922132557557,
+      "solver_status": "HxSolutionStatus.FEASIBLE",
+      "success": true
+    }
+  ]
+}

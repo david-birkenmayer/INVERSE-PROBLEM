@@ -1,7 +1,0 @@
-measurement_sites,radius,success,max_violation,min_demand_viol,objective,solver_status,best_bound,output_dir
-['2'],0.0,True,0.0,-2.7121073822752558e-15,0.0,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/2
-['3'],8.144316575960479e-13,True,0.0,0.18644464218399665,6.632989248946462e-25,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/3
-['4'],1.9094258620739433e-12,True,0.0,0.18644464218398368,3.645907122756822e-24,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/4
-['1'],0.0007535540273535046,True,0.0,0.0007842068589687816,5.678436721406864e-07,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/1
-['5'],0.0009150424579950411,True,0.0,-3.514102804218569e-14,8.373026999336067e-07,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/5
-['6'],0.0009231178800548179,True,0.0,0.0002698367344581089,8.521466204769011e-07,HxSolutionStatus.OPTIMAL,,data/Alperovits/fe7bf2af/6

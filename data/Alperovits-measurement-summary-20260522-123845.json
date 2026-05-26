@@ -1,0 +1,24 @@
+{
+  "results": [
+    {
+      "C_d": 0.8782884703985387,
+      "C_h": 0.7373974965987922,
+      "W_d": 1.562275463333378,
+      "W_h": 0.43863817271061867,
+      "best_bound": null,
+      "max_violation": 0.0,
+      "measurement_count": 1,
+      "measurement_sites": [
+        "3"
+      ],
+      "method": "xd",
+      "min_demand_viol": -9.199427277996044e-07,
+      "mode": "W_d",
+      "objective": 2.440704623333521,
+      "output_dir": "data/Alperovits/1e124704",
+      "radius": 1.562275463333378,
+      "solver_status": "HxSolutionStatus.OPTIMAL",
+      "success": true
+    }
+  ]
+}

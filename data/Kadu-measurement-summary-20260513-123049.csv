@@ -1,2 +1,0 @@
-measurement_sites,radius,success,max_violation,min_demand_viol,objective,solver_status,best_bound,output_dir
-"['13', '19', '24', '3']",0.012698908943993503,False,0.0,-0.009628566039833208,0.00016126228836783822,HxSolutionStatus.INFEASIBLE,,data/Kadu/919cd1eb

@@ -275,6 +275,10 @@ def plot_demand_distance(
 	flows_b: Dict[str, float],
 	radius: float,
 	norm_p: float,
+	mode: str,
+	center_side: str | None,
+	center_symbol: str | None,
+	metrics: Dict[str, float],
 	measurement_count: int,
 	output_dir: str,
 	c_bounds: Dict[str, float],
@@ -396,9 +400,35 @@ def plot_demand_distance(
 		norm_label = "inf"
 	else:
 		norm_label = f"{norm_p:g}"
+
+	def _p_norm(values):
+		vals = [abs(float(v)) for v in values]
+		if not vals:
+			return 0.0
+		if norm_p == float("inf"):
+			return max(vals)
+		return float(sum(v ** float(norm_p) for v in vals) ** (1.0 / float(norm_p)))
+
+	d_nodes = sorted(set(demands_a.keys()) | set(demands_b.keys()))
+	h_nodes = sorted(set(heads_a.keys()) | set(heads_b.keys()))
+	d_norm_pair = _p_norm(float(demands_a.get(n, 0.0)) - float(demands_b.get(n, 0.0)) for n in d_nodes)
+	h_norm_pair = _p_norm(float(heads_a.get(n, 0.0)) - float(heads_b.get(n, 0.0)) for n in h_nodes)
+
+	mode_text = str(mode or "W_d")
 	ax.set_title(
-		f"Max demand-distance solution ({norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
+		f"Max solution (mode={mode_text}, {norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
 	)
+	metric_text = (
+		f"W_d={float(metrics.get('W_d', float('nan'))):.5f}, "
+		f"C_d={float(metrics.get('C_d', float('nan'))):.5f}, "
+		f"W_h={float(metrics.get('W_h', float('nan'))):.5f}, "
+		f"C_h={float(metrics.get('C_h', float('nan'))):.5f}"
+	)
+	pair_text = f"pair norms: ||dA-dB||={d_norm_pair:.5f}, ||hA-hB||={h_norm_pair:.5f}"
+	center_text = ""
+	if center_side in {"blue", "green"} and center_symbol:
+		center_text = f" | center ({center_symbol}) = {center_side}"
+	ax.text(0.5, 1.01, f"{metric_text} | {pair_text}{center_text}", transform=ax.transAxes, ha="center", va="bottom", fontsize=8)
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig(os.path.join(output_dir, "demand_distance.png"), dpi=200)
@@ -462,6 +492,15 @@ def main() -> None:
 			flows_b=demand_distance.get("flows_b", {}),
 			radius=float(demand_distance.get("radius", 0.0)),
 			norm_p=float(demand_distance.get("norm", 2.0)),
+			mode=str(demand_distance.get("mode", "W_d")),
+			center_side=(str(demand_distance.get("center_side")) if demand_distance.get("center_side") is not None else None),
+			center_symbol=(str(demand_distance.get("center_symbol")) if demand_distance.get("center_symbol") is not None else None),
+			metrics={
+				"W_d": float(demand_distance.get("W_d", float("nan"))),
+				"C_d": float(demand_distance.get("C_d", float("nan"))),
+				"W_h": float(demand_distance.get("W_h", float("nan"))),
+				"C_h": float(demand_distance.get("C_h", float("nan"))),
+			},
 			measurement_count=int(demand_distance.get("p", len(measurement_nodes))),
 			output_dir=DATA_DIR,
 			c_bounds=c_bounds,

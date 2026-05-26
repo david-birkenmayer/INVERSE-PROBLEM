@@ -20,12 +20,11 @@ if ROOT_DIR not in sys.path:
 	sys.path.insert(0, ROOT_DIR)
 
 from gui.cache import compute_hash, load_index, save_index
-from gui.state import ScenarioParams, SolverParams
+from gui.state import SolverParams
 from step1_io import load_inp_network
 
 
 CACHE_DIR = ".gui_cache"
-LEGACY_SCENARIO_INDEX = os.path.join("scenario", "cache_index.json")
 LEGACY_DATA_INDEX = os.path.join("data", "cache_index.json")
 
 
@@ -38,10 +37,6 @@ def _write_json(path: str, payload: Dict[str, object]) -> None:
 def _read_json(path: str) -> Dict[str, object]:
 	with open(path, "r", encoding="utf-8") as f:
 		return json.load(f)
-
-
-def _scenario_index_path(wdn: str) -> str:
-	return os.path.join("scenario", wdn, "cache_index.json")
 
 
 def _data_index_path(wdn: str) -> str:
@@ -125,12 +120,7 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 	params = _read_json(params_path)
 	demand_distance = _read_json(dd_path)
 	radius = float(demand_distance.get("radius", 0.0))
-	scenario_file = str(params.get("SCENARIO_FILE", ""))
-	if not scenario_file or not os.path.isfile(scenario_file):
-		return None
-	scenario = _read_json(scenario_file)
-
-	wdn = str(params.get("WDN") or params.get("WDN_NAME") or scenario.get("wdn") or scenario.get("wdn_name") or "")
+	wdn = str(params.get("WDN") or params.get("WDN_NAME") or "")
 	if not wdn:
 		return None
 	inp_path = os.path.join("wdn", f"{wdn}.inp")
@@ -141,8 +131,8 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		c_bounds = {k: float(v) for k, v in bounds_payload.get("c_bounds", {}).items()}
 		C_bounds = {k: float(v) for k, v in bounds_payload.get("C_bounds", {}).items()}
 	else:
-		c_bounds = {k: float(v) for k, v in scenario.get("c_bounds", {}).items()}
-		C_bounds = {k: float(v) for k, v in scenario.get("C_bounds", {}).items()}
+		c_bounds = {}
+		C_bounds = {}
 
 	measurement_nodes = [str(x) for x in params.get("MEASUREMENT_NODES") or []]
 	plot_demand_distance(
@@ -156,6 +146,15 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		flows_b=demand_distance.get("flows_b", {}),
 		radius=radius,
 		norm_p=float(demand_distance.get("norm", 2.0)),
+		mode=str(demand_distance.get("mode", "W_d")),
+		center_side=demand_distance.get("center_side"),
+		center_symbol=demand_distance.get("center_symbol"),
+		metrics={
+			"W_d": float(demand_distance.get("W_d", float("nan"))),
+			"C_d": float(demand_distance.get("C_d", float("nan"))),
+			"W_h": float(demand_distance.get("W_h", float("nan"))),
+			"C_h": float(demand_distance.get("C_h", float("nan"))),
+		},
 		measurement_count=int(demand_distance.get("p", len(measurement_nodes))),
 		output_dir=temp_dir,
 		c_bounds=c_bounds,
@@ -171,7 +170,7 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 	os.replace(src_png, dst_png)
 	name = os.path.basename(data_dir)
 	if not measurement_nodes:
-		name = f"{name} (no measurements)"
+		name = f"{name} (no sites)"
 	if name_prefix:
 		name = f"[{name_prefix}] {name}"
 	return name, dst_png, radius, len(measurement_nodes)
@@ -441,110 +440,83 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 			w.setVisible(visible)
 
 	def _build_ui(self, defaults: "SolverParams") -> None:
-		form = QtWidgets.QFormLayout(self)
-		self._form = form
+		root = QtWidgets.QVBoxLayout(self)
 
-		self.solver_mode = QtWidgets.QComboBox()
-		self.solver_mode.addItems(["Hexaly_xd", "Hexaly"])
-		self.solver_mode.setCurrentText(defaults.solver)
-		self.solver_mode.currentTextChanged.connect(self._update_visibility)
-		self._add_row(form, "solver", "Solver", self.solver_mode)
+		general_group = QtWidgets.QGroupBox("Parameters")
+		general_form = QtWidgets.QFormLayout(general_group)
+		self._form = general_form
 
 		self.norm_value = self._new_double_spin(0.1, 100.0, defaults.norm, decimals=4, step=0.1)
-		self._add_row(form, "norm", "Norm", self.norm_value)
-
-		self.demand_lb = self._new_double_spin(0.0, 1e6, defaults.demand_lb, decimals=8, step=1e-6)
-		self._add_row(form, "demand_lb", "Demand LB", self.demand_lb)
-
-		self.fix_total_demand = QtWidgets.QCheckBox()
-		self.fix_total_demand.setChecked(defaults.fix_total_demand)
-		self._add_row(form, "fix_total", "Fix Total Demand", self.fix_total_demand)
+		self._add_row(general_form, "norm", "Norm", self.norm_value)
 
 		self.measurement_heads_equal = QtWidgets.QCheckBox()
 		self.measurement_heads_equal.setChecked(defaults.measurement_heads_equal_only)
-		self._add_row(form, "heads_equal", "Heads Equal at Sensors", self.measurement_heads_equal)
+		self._add_row(general_form, "heads_equal", "Heads Equal at Sensors", self.measurement_heads_equal)
+
+		self.match_total_demand = QtWidgets.QCheckBox()
+		self.match_total_demand.setChecked(defaults.match_reservoir_outflow_between_pairs)
+		self._add_row(general_form, "match_total_demand", "Match Total Demand", self.match_total_demand)
+		root.addWidget(general_group)
+
+		solver_group = QtWidgets.QGroupBox("Solver Specification")
+		solver_form = QtWidgets.QFormLayout(solver_group)
+
+		self.method = QtWidgets.QComboBox()
+		self.method.addItem("head loss (x)", "xd")
+		self.method.addItem("head (h)", "classical")
+		self.method.setCurrentIndex(max(0, self.method.findData(defaults.method)))
+		solver_form.addRow("Method", self.method)
+
+		self.demand_lb = self._new_double_spin(0.0, 1e6, defaults.demand_lb, decimals=8, step=1e-6)
+		solver_form.addRow("Demand LB", self.demand_lb)
 
 		self.multi_starts = QtWidgets.QSpinBox()
 		self.multi_starts.setRange(1, 100)
 		self.multi_starts.setValue(defaults.multi_starts)
-		self._add_row(form, "multi_starts", "Multi Starts", self.multi_starts)
+		solver_form.addRow("Multi Starts", self.multi_starts)
 
 		self.multi_noise = self._new_double_spin(0.0, 100.0, defaults.multi_start_noise, decimals=4, step=0.01)
-		self._add_row(form, "multi_noise", "Noise Abs", self.multi_noise)
+		solver_form.addRow("Noise Abs", self.multi_noise)
 
 		self.multi_noise_rel = self._new_double_spin(0.0, 100.0, defaults.multi_start_noise_rel, decimals=4, step=0.01)
-		self._add_row(form, "multi_noise_rel", "Noise Rel", self.multi_noise_rel)
-
-		self.restriction_mode = QtWidgets.QComboBox()
-		self.restriction_mode.addItems(["none", "radius_to_fixed", "deviation_to_fixed"])
-		self.restriction_mode.setCurrentText(defaults.demand_restriction_mode or "none")
-		self.restriction_mode.currentTextChanged.connect(self._update_visibility)
-		self._add_row(form, "restriction_mode", "Restriction Mode", self.restriction_mode)
-
-		radius_value = defaults.radius_to_fixed if defaults.radius_to_fixed is not None else 0.0
-		self.radius_to_fixed = self._new_double_spin(0.0, 1e9, float(radius_value), decimals=6, step=0.1)
-		self._add_row(form, "radius_to_fixed", "Radius to Fixed", self.radius_to_fixed)
-
-		alpha_value = defaults.deviation_alpha if defaults.deviation_alpha is not None else 0.0
-		self.deviation_alpha = self._new_double_spin(0.0, 1e9, float(alpha_value), decimals=6, step=0.1)
-		self._add_row(form, "deviation_alpha", "Deviation Alpha", self.deviation_alpha)
-
-		self.check_xd_base = QtWidgets.QCheckBox()
-		self.check_xd_base.setChecked(defaults.check_xd_base_feasibility)
-		self._add_row(form, "check_xd_base", "Check XD Base Feasibility", self.check_xd_base)
-
-		self.check_xd_cycle = QtWidgets.QCheckBox()
-		self.check_xd_cycle.setChecked(defaults.check_xd_cycle_bounds)
-		self._add_row(form, "check_xd_cycle", "Check XD Cycle Bounds", self.check_xd_cycle)
-
-		self.xd_cycle_basis = QtWidgets.QComboBox()
-		self.xd_cycle_basis.addItems(["planar", "graph"])
-		self.xd_cycle_basis.setCurrentText(defaults.xd_cycle_basis_mode)
-		self._add_row(form, "xd_cycle_basis", "XD Cycle Basis", self.xd_cycle_basis)
-
-		self.skip_feasibility = QtWidgets.QCheckBox()
-		self.skip_feasibility.setChecked(defaults.skip_feasibility_solve)
-		self._add_row(form, "skip_feasibility", "Skip Feasibility Solve", self.skip_feasibility)
-
-		self.fixed_reference = QtWidgets.QCheckBox()
-		self.fixed_reference.setChecked(defaults.fixed_reference)
-		self._add_row(form, "fixed_reference", "Fixed Reference (b)", self.fixed_reference)
+		solver_form.addRow("Noise Rel", self.multi_noise_rel)
 
 		self.hexaly_time_limit = QtWidgets.QSpinBox()
 		self.hexaly_time_limit.setRange(1, 36000)
 		self.hexaly_time_limit.setValue(defaults.hexaly_time_limit)
-		self._add_row(form, "hexaly_time", "Time Limit", self.hexaly_time_limit)
+		solver_form.addRow("Time Limit", self.hexaly_time_limit)
+		root.addWidget(solver_group)
 
+		self._mode = defaults.mode
+		self._solver_group = solver_group
+		self._update_visibility()
+
+	def set_mode(self, mode: str) -> None:
+		self._mode = str(mode)
 		self._update_visibility()
 
 	def _update_visibility(self) -> None:
-		solver = self.solver_mode.currentText()
-		restriction = self.restriction_mode.currentText()
-		is_xd_solver = solver == "Hexaly_xd"
-		for key in ["check_xd_base", "check_xd_cycle", "xd_cycle_basis", "skip_feasibility", "fixed_reference"]:
-			self._set_row_visible(key, is_xd_solver)
-		self._set_row_visible("radius_to_fixed", restriction == "radius_to_fixed")
-		self._set_row_visible("deviation_alpha", restriction == "deviation_to_fixed")
+		mode = str(getattr(self, "_mode", "W_d"))
+		show_method = mode in {"W_d", "C_d"}
+		self._solver_group.setVisible(True)
+		for row in range(self._solver_group.layout().rowCount()):
+			pass
+		self._set_row_visible("match_total_demand", mode in {"W_d", "C_d"})
+		self.method.setVisible(show_method)
+		method_label = self._solver_group.layout().labelForField(self.method)
+		if method_label is not None:
+			method_label.setVisible(show_method)
 
 	def get_payload(self) -> Dict[str, object]:
-		restriction = self.restriction_mode.currentText()
 		return {
-			"SOLVER": self.solver_mode.currentText(),
+			"METHOD": str(self.method.currentData()),
 			"NORM": self.norm_value.value(),
 			"DEMAND_LB": self.demand_lb.value(),
-			"FIX_TOTAL_DEMAND": self.fix_total_demand.isChecked(),
 			"MEASUREMENT_HEADS_EQUAL_ONLY": self.measurement_heads_equal.isChecked(),
+			"MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": self.match_total_demand.isChecked(),
 			"MULTI_STARTS": self.multi_starts.value(),
 			"MULTI_START_NOISE": self.multi_noise.value(),
 			"MULTI_START_NOISE_REL": self.multi_noise_rel.value(),
-			"DEMAND_RESTRICTION_MODE": None if restriction == "none" else restriction,
-			"RADIUS_TO_FIXED": self.radius_to_fixed.value() if restriction == "radius_to_fixed" else None,
-			"DEVIATION_ALPHA": self.deviation_alpha.value() if restriction == "deviation_to_fixed" else None,
-			"CHECK_XD_BASE_FEASIBILITY": self.check_xd_base.isChecked(),
-			"CHECK_XD_CYCLE_BOUNDS": self.check_xd_cycle.isChecked(),
-			"XD_CYCLE_BASIS_MODE": self.xd_cycle_basis.currentText(),
-			"SKIP_FEASIBILITY_SOLVE": self.skip_feasibility.isChecked(),
-			"FIXED_REFERENCE": self.fixed_reference.isChecked(),
 			"HEXALY_TIME_LIMIT": self.hexaly_time_limit.value(),
 		}
 
@@ -866,7 +838,7 @@ class DemandDistanceViewerDialog(QtWidgets.QDialog):
 
 
 class ResultsTableDialog(QtWidgets.QDialog):
-	"""Shows the measurement-summary CSV in a table with toggleable extra columns."""
+	"""Shows the solver summary CSV in a table with toggleable extra columns."""
 
 	_DEFAULT_COLS = ["measurement_sites", "radius"]
 	_EXTRA_COLS = ["success", "max_violation", "min_demand_viol", "objective", "solver_status", "best_bound"]
@@ -977,8 +949,9 @@ class ResultsTableDialog(QtWidgets.QDialog):
 			else:
 				self._view_rows = list(self._rows)
 		cols = self._visible_cols()
+		headers = ["sites" if col == "measurement_sites" else col for col in cols]
 		self._table.setColumnCount(len(cols))
-		self._table.setHorizontalHeaderLabels(cols)
+		self._table.setHorizontalHeaderLabels(headers)
 		self._table.setRowCount(len(self._view_rows))
 		for r, row in enumerate(self._view_rows):
 			for c, col in enumerate(cols):
@@ -1252,12 +1225,10 @@ class MainWindow(QtWidgets.QMainWindow):
 	def __init__(self) -> None:
 		super().__init__()
 		self.setWindowTitle("Inverse Problem GUI")
-		self.scenario_params = ScenarioParams()
 		self.solver_params = SolverParams()
-		self._scenario_rows: Dict[str, tuple[QtWidgets.QLabel, QtWidgets.QWidget]] = {}
-		self._scenario_form: QtWidgets.QFormLayout | None = None
 		self._measurement_value: object = []
 		self._measurement_valid = True
+		self._measurement_data_valid = True
 		self._updating_measurement_text = False
 		self._last_output_title = ""
 		self._last_output_text = ""
@@ -1307,7 +1278,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.wdn_input = QtWidgets.QComboBox()
 		self.wdn_input.setEditable(True)
 		self.wdn_input.addItems(self._get_wdn_names())
-		self.wdn_input.setCurrentText(self.scenario_params.wdn)
+		self.wdn_input.setCurrentText(self.solver_params.wdn)
 		self.wdn_input.currentTextChanged.connect(self._wdn_changed)
 		global_layout.addWidget(self.wdn_input)
 		self.reload_button = QtWidgets.QPushButton("Load Network")
@@ -1322,7 +1293,6 @@ class MainWindow(QtWidgets.QMainWindow):
 		left_layout = QtWidgets.QVBoxLayout(left)
 		self.tabs = QtWidgets.QTabWidget()
 		left_layout.addWidget(self.tabs)
-		self._build_scenario_tab()
 		self._build_solver_tab()
 
 		splitter.addWidget(left)
@@ -1341,157 +1311,6 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.output_button.clicked.connect(self._show_last_output)
 		self.status_bar.addPermanentWidget(self.output_button)
 
-	def _build_scenario_tab(self) -> None:
-		widget = QtWidgets.QWidget()
-		form = QtWidgets.QFormLayout(widget)
-		self._scenario_form = form
-		self.scenario_name = QtWidgets.QLineEdit(self.scenario_params.scenario_name)
-		self._add_form_row(form, "scenario_name", "Scenario Name", self.scenario_name)
-		self.scenario_source = QtWidgets.QComboBox()
-		self.scenario_source.addItems(["base", "random", "dirichlet"])
-		self.scenario_source.setCurrentText(self.scenario_params.scenario_source)
-		self.scenario_source.currentTextChanged.connect(self._update_pipe_bounds_visibility)
-		self._add_form_row(form, "scenario_source", "Scenario Source", self.scenario_source)
-
-		self.pipe_bounds = QtWidgets.QCheckBox()
-		self.pipe_bounds.setChecked(self.scenario_params.pipe_bounds)
-		self.pipe_bounds.stateChanged.connect(self._update_pipe_bounds_visibility)
-		self._add_form_row(form, "pipe_bounds", "Pipe Bounds", self.pipe_bounds)
-
-		self.pipe_bound_safeness = self._new_double_spin(0.0, 1.0, self.scenario_params.pipe_bound_safeness, decimals=4, step=0.05)
-		self._add_form_row(form, "pipe_bound_safeness", "Bound Safeness", self.pipe_bound_safeness)
-
-		self.pipe_bound_method = QtWidgets.QComboBox()
-		self.pipe_bound_method.addItems(["perturb", "montecarlo", "dirichlet"])
-		self.pipe_bound_method.setCurrentText(self.scenario_params.pipe_bound_method)
-		self.pipe_bound_method.currentTextChanged.connect(self._update_pipe_bounds_visibility)
-		self._add_form_row(form, "pipe_bound_method", "Bound Method", self.pipe_bound_method)
-
-		self.pipe_bound_policy = QtWidgets.QComboBox()
-		self.pipe_bound_policy.addItems(["minmax", "quantile"])
-		self.pipe_bound_policy.setCurrentText(self.scenario_params.pipe_bound_policy)
-		self.pipe_bound_policy.currentTextChanged.connect(self._update_pipe_bounds_visibility)
-		self._add_form_row(form, "pipe_bound_policy", "Bound Policy", self.pipe_bound_policy)
-
-		self.pipe_bound_samples = QtWidgets.QSpinBox()
-		self.pipe_bound_samples.setRange(1, 10000)
-		self.pipe_bound_samples.setValue(self.scenario_params.pipe_bound_perturb_samples)
-		self._add_form_row(form, "pipe_bound_samples", "Perturb Samples", self.pipe_bound_samples)
-
-		self.pipe_bound_sigma = self._new_double_spin(0.0, 10.0, self.scenario_params.pipe_bound_perturb_sigma, decimals=4, step=0.01)
-		self._add_form_row(form, "pipe_bound_sigma", "Perturb Sigma", self.pipe_bound_sigma)
-
-		self.pipe_bound_seed = QtWidgets.QSpinBox()
-		self.pipe_bound_seed.setRange(0, 2**31 - 1)
-		self.pipe_bound_seed.setValue(self.scenario_params.pipe_bound_perturb_seed)
-		self._add_form_row(form, "pipe_bound_seed", "Perturb Seed", self.pipe_bound_seed)
-
-		self.pipe_bound_fix_total = QtWidgets.QCheckBox()
-		self.pipe_bound_fix_total.setChecked(self.scenario_params.pipe_bound_perturb_fix_total)
-		self._add_form_row(form, "pipe_bound_fix_total", "Fix Total Demand", self.pipe_bound_fix_total)
-
-		self.pipe_bound_base = QtWidgets.QComboBox()
-		self.pipe_bound_base.addItems(["base", "auto", "scenario"])
-		self.pipe_bound_base.setCurrentText(self.scenario_params.pipe_bound_perturb_base)
-		self._add_form_row(form, "pipe_bound_base", "Perturb Base", self.pipe_bound_base)
-
-		self.dirichlet_extra_demand = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_extra_demand, decimals=4, step=0.1)
-		self._add_form_row(form, "dirichlet_extra_demand", "Dirichlet Extra Demand", self.dirichlet_extra_demand)
-
-		self.dirichlet_min_deviation = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_min_deviation, decimals=4, step=0.1)
-		self._add_form_row(form, "dirichlet_min_deviation", "Dirichlet Min Deviation", self.dirichlet_min_deviation)
-
-		self.dirichlet_max_deviation = self._new_double_spin(0.0, 1e6, self.scenario_params.dirichlet_max_deviation, decimals=4, step=0.1)
-		self._add_form_row(form, "dirichlet_max_deviation", "Dirichlet Max Deviation", self.dirichlet_max_deviation)
-
-		self.dirichlet_samples = QtWidgets.QSpinBox()
-		self.dirichlet_samples.setRange(1, 10000)
-		self.dirichlet_samples.setValue(self.scenario_params.dirichlet_samples)
-		self._add_form_row(form, "dirichlet_samples", "Dirichlet Samples", self.dirichlet_samples)
-
-		self.dirichlet_seed = QtWidgets.QSpinBox()
-		self.dirichlet_seed.setRange(0, 2**31 - 1)
-		self.dirichlet_seed.setValue(self.scenario_params.dirichlet_seed)
-		self._add_form_row(form, "dirichlet_seed", "Dirichlet Seed", self.dirichlet_seed)
-
-		self.generate_button = QtWidgets.QPushButton("Generate Scenario")
-		self.generate_button.clicked.connect(self._generate_scenario)
-		form.addRow(self.generate_button)
-
-		self.tabs.addTab(widget, "Scenario")
-		self._update_pipe_bounds_visibility()
-		self._freeze_form_label_width()
-
-	def _add_form_row(
-		self,
-		form: QtWidgets.QFormLayout,
-		key: str,
-		label: str,
-		widget: QtWidgets.QWidget,
-	) -> None:
-		row_label = QtWidgets.QLabel(label)
-		form.addRow(row_label, widget)
-		self._scenario_rows[key] = (row_label, widget)
-
-	def _freeze_form_label_width(self) -> None:
-		if self._scenario_form is None:
-			return
-		max_width = 0
-		for label, _ in self._scenario_rows.values():
-			max_width = max(max_width, label.sizeHint().width())
-		for label, _ in self._scenario_rows.values():
-			label.setMinimumWidth(max_width)
-
-	def _set_row_visible(self, key: str, visible: bool) -> None:
-		row = self._scenario_rows.get(key)
-		if not row:
-			return
-		label, widget = row
-		if self._scenario_form is not None:
-			self._scenario_form.setRowVisible(label, visible)
-		else:
-			label.setVisible(visible)
-			widget.setVisible(visible)
-
-	def _update_pipe_bounds_visibility(self) -> None:
-		pipe_bounds_on = self.pipe_bounds.isChecked()
-		policy = self.pipe_bound_policy.currentText()
-		method = self.pipe_bound_method.currentText()
-
-		for key in [
-			"pipe_bound_method",
-			"pipe_bound_policy",
-			"pipe_bound_safeness",
-			"pipe_bound_samples",
-			"pipe_bound_sigma",
-			"pipe_bound_seed",
-			"pipe_bound_fix_total",
-			"pipe_bound_base",
-		]:
-			self._set_row_visible(key, pipe_bounds_on)
-
-		if not pipe_bounds_on:
-			return
-
-		self._set_row_visible("pipe_bound_safeness", policy == "quantile")
-
-		perturb_only = method == "perturb"
-		for key in [
-			"pipe_bound_samples",
-			"pipe_bound_sigma",
-			"pipe_bound_seed",
-			"pipe_bound_fix_total",
-			"pipe_bound_base",
-		]:
-			self._set_row_visible(key, perturb_only)
-
-		dirichlet_on = method == "dirichlet" or self.scenario_source.currentText() == "dirichlet"
-		self._set_row_visible("dirichlet_extra_demand", dirichlet_on)
-		self._set_row_visible("dirichlet_min_deviation", dirichlet_on)
-		self._set_row_visible("dirichlet_max_deviation", dirichlet_on)
-		self._set_row_visible("dirichlet_samples", pipe_bounds_on and method == "dirichlet")
-		self._set_row_visible("dirichlet_seed", pipe_bounds_on and method == "dirichlet")
-
 	def _build_solver_tab(self) -> None:
 		# Outer scrollable container
 		scroll = QtWidgets.QScrollArea()
@@ -1504,16 +1323,40 @@ class MainWindow(QtWidgets.QMainWindow):
 		# Shared fields
 		shared_group = QtWidgets.QGroupBox("Shared")
 		shared_form = QtWidgets.QFormLayout(shared_group)
-		self.solver_scenario_name = QtWidgets.QLineEdit(self.solver_params.scenario_name)
-		shared_form.addRow("Scenario Name", self.solver_scenario_name)
+		self.mode_input = QtWidgets.QComboBox()
+		self.mode_input.addItem("W_d", "W_d")
+		self.mode_input.addItem("C_d", "C_d")
+		self.mode_input.addItem("W_h", "W_h")
+		self.mode_input.addItem("C_h - fixed", "C_h_fixed")
+		mode_default = self.solver_params.mode
+		if mode_default in {"C_h", "H_h"}:
+			mode_default = "C_h_fixed"
+		self.mode_input.setCurrentIndex(max(0, self.mode_input.findData(mode_default)))
+		self.mode_input.currentIndexChanged.connect(self._mode_changed)
+		shared_form.addRow("Mode", self.mode_input)
 		self.measurement_list = QtWidgets.QLineEdit("")
-		self.measurement_list.setPlaceholderText("blank/#0, #a, #a-#b, or comma-separated node ids")
+		self.measurement_list.setPlaceholderText("blank/#0, #a, #a-#b, or comma-separated site ids")
 		self.measurement_list.textChanged.connect(self._measurement_text_changed)
-		shared_form.addRow("Measurements", self.measurement_list)
+		shared_form.addRow("Sites", self.measurement_list)
+		self.measurement_source = QtWidgets.QComboBox()
+		self.measurement_source.addItem("from W_d", "from_w_d")
+		self.measurement_source.addItem("base", "base")
+		self.measurement_source.addItem("custom input", "custom")
+		self.measurement_source.setCurrentIndex(max(0, self.measurement_source.findData(self.solver_params.measurement_source)))
+		self.measurement_source.currentIndexChanged.connect(self._measurement_source_changed)
+		shared_form.addRow("Measurement", self.measurement_source)
+		self.measurement_data_input = QtWidgets.QPlainTextEdit()
+		self.measurement_data_input.setPlaceholderText('{\n  "12": 53.1,\n  "17": 49.8,\n  "-1": 0.031,\n  "R1": 78.4\n}')
+		self.measurement_data_input.setPlainText(self.solver_params.measurement_data)
+		self.measurement_data_input.textChanged.connect(self._measurement_data_text_changed)
+		self.measurement_data_input.setMaximumHeight(120)
+		shared_form.addRow("Custom data", self.measurement_data_input)
 		self.show_sensors_mode = QtWidgets.QCheckBox("Show sensors")
 		self.show_sensors_mode.setChecked(False)
 		self.show_sensors_mode.toggled.connect(self._apply_show_sensors_mode)
 		shared_form.addRow("Visualization", self.show_sensors_mode)
+		self._rebuild_measurement_source_options(preserve_current=False)
+		self._update_measurement_source_visibility()
 		outer.addWidget(shared_group)
 
 		# Options row
@@ -1534,6 +1377,8 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.model_b = SolverModelWidget("Model B", _SP(), container)
 		self.model_b.setVisible(False)
 		outer.addWidget(self.model_b)
+		self.model_a.set_mode(self._current_mode())
+		self.model_b.set_mode(self._current_mode())
 		self.comparison_mode_check.stateChanged.connect(
 			lambda: self.model_b.setVisible(self.comparison_mode_check.isChecked())
 		)
@@ -1574,8 +1419,6 @@ class MainWindow(QtWidgets.QMainWindow):
 		outer.addWidget(info)
 
 		form = QtWidgets.QFormLayout()
-		self.ls_scenario_name = QtWidgets.QLineEdit(self.solver_params.scenario_name)
-		form.addRow("Scenario Name", self.ls_scenario_name)
 		self.ls_nodes_input = QtWidgets.QLineEdit()
 		self.ls_nodes_input.setPlaceholderText("e.g. 3, 7, 12")
 		form.addRow("Starting Nodes", self.ls_nodes_input)
@@ -2812,7 +2655,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		layout = QtWidgets.QVBoxLayout(dialog)
 		caption = QtWidgets.QLabel(
 			"Use Left/Right to browse scenarios. Head labels above bars are (actual - predicted) in meters. "
-			"Measurement and reservoir nodes are clamped to ground truth, and meas_* pseudo nodes are ignored in pressure plots."
+			"Site and reservoir nodes are clamped to ground truth, and meas_* pseudo nodes are ignored in pressure plots."
 		)
 		caption.setWordWrap(True)
 		layout.addWidget(caption)
@@ -2916,15 +2759,6 @@ class MainWindow(QtWidgets.QMainWindow):
 			)
 			return
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
-		scenario_name = self.ls_scenario_name.text().strip() or self.solver_params.scenario_name
-		scenario_path = os.path.join("scenario", wdn, f"{scenario_name}.json")
-		if not os.path.exists(scenario_path):
-			QtWidgets.QMessageBox.warning(
-				self,
-				"Scenario Missing",
-				f"Scenario file not found:\n{scenario_path}\n\nGenerate it in the Scenario tab first.",
-			)
-			return
 		adjacency = self.plot.get_pipe_adjacency()
 		index_path = _data_index_path(wdn)
 		existing_index = _load_index_with_legacy(index_path, LEGACY_DATA_INDEX)
@@ -2969,8 +2803,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			dlg.show()
 
 	def _wdn_changed(self) -> None:
-		self.scenario_params.wdn = self.wdn_input.currentText().strip()
-		self.solver_params.wdn = self.scenario_params.wdn
+		self.solver_params.wdn = self.wdn_input.currentText().strip()
 		if not self._updating_measurement_text:
 			self._measurement_text_changed(self.measurement_list.text())
 		if hasattr(self, "gnn_default_nodes_label"):
@@ -2983,7 +2816,6 @@ class MainWindow(QtWidgets.QMainWindow):
 		wdn = self.wdn_input.currentText().strip()
 		if not wdn:
 			return
-		self.scenario_params.wdn = wdn
 		self.solver_params.wdn = wdn
 		try:
 			self.plot.load_network(wdn)
@@ -3008,6 +2840,123 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.measurement_list.setStyleSheet("")
 		else:
 			self.measurement_list.setStyleSheet("QLineEdit { border: 2px solid #c53030; background: #fff5f5; }")
+
+	def _set_measurement_data_input_validity(self, valid: bool) -> None:
+		if valid:
+			self.measurement_data_input.setStyleSheet("")
+		else:
+			self.measurement_data_input.setStyleSheet("QPlainTextEdit { border: 2px solid #c53030; background: #fff5f5; }")
+
+	def _measurement_source_value(self) -> str:
+		return str(self.measurement_source.currentData() or "from_w_d")
+
+	def _current_mode(self) -> str:
+		return str(self.mode_input.currentData() or self.mode_input.currentText())
+
+	def _measurement_source_options_for_mode(self, mode: str) -> List[tuple[str, str]]:
+		if mode == "C_h_fixed":
+			return [
+				("from W_h", "from_w_h"),
+			]
+		if mode == "C_h":
+			return [
+				("from W_h", "from_w_h"),
+				("from W_d", "from_w_d"),
+				("base", "base"),
+				("custom input", "custom"),
+			]
+		if mode == "C_d":
+			return [
+				("from W_d", "from_w_d"),
+				("from W_h", "from_w_h"),
+				("base", "base"),
+				("custom input", "custom"),
+			]
+		return [
+			("from W_d", "from_w_d"),
+			("from W_h", "from_w_h"),
+			("base", "base"),
+			("custom input", "custom"),
+		]
+
+	def _default_measurement_source_for_mode(self, mode: str) -> str:
+		if mode in {"C_h", "C_h_fixed"}:
+			return "from_w_h"
+		if mode == "C_d":
+			return "from_w_d"
+		return "from_w_d"
+
+	def _rebuild_measurement_source_options(self, preserve_current: bool = True) -> None:
+		mode = self._current_mode()
+		current = self._measurement_source_value() if preserve_current else ""
+		options = self._measurement_source_options_for_mode(mode)
+		valid_values = [value for _label, value in options]
+		if current not in valid_values:
+			current = self._default_measurement_source_for_mode(mode)
+		elif current in {"from_w_d", "from_w_h"}:
+			current = self._default_measurement_source_for_mode(mode)
+
+		self.measurement_source.blockSignals(True)
+		self.measurement_source.clear()
+		for label, value in options:
+			self.measurement_source.addItem(label, value)
+			self.measurement_source.setCurrentIndex(max(0, self.measurement_source.findData(current)))
+		self.measurement_source.blockSignals(False)
+		self.solver_params.measurement_source = self._measurement_source_value()
+
+	def _mode_changed(self, *_args) -> None:
+		mode = self._current_mode()
+		self.solver_params.mode = str(mode)
+		self.model_a.set_mode(mode)
+		self.model_b.set_mode(mode)
+		self._rebuild_measurement_source_options(preserve_current=True)
+		self._update_measurement_source_visibility()
+		self._measurement_data_text_changed()
+
+	def _update_measurement_source_visibility(self) -> None:
+		show_measurement = self._current_mode() in {"C_d", "C_h", "C_h_fixed"}
+		measurement_label = self.measurement_source.parentWidget().layout().labelForField(self.measurement_source)
+		if measurement_label is not None:
+			measurement_label.setVisible(show_measurement)
+		self.measurement_source.setVisible(show_measurement)
+
+		is_custom = show_measurement and self._measurement_source_value() == "custom"
+		self.measurement_data_input.setVisible(is_custom)
+		label = self.measurement_data_input.parentWidget().layout().labelForField(self.measurement_data_input)
+		if label is not None:
+			label.setVisible(is_custom)
+
+	def _measurement_source_changed(self) -> None:
+		self.solver_params.measurement_source = self._measurement_source_value()
+		self._update_measurement_source_visibility()
+		self._measurement_data_text_changed()
+
+	def _parse_measurement_data_input(self, text: str) -> tuple[bool, Dict[str, float] | None]:
+		payload = text.strip()
+		if self._current_mode() not in {"C_d", "C_h", "C_h_fixed"} or self._measurement_source_value() != "custom":
+			return True, None
+		if not payload:
+			return False, None
+		try:
+			data = json.loads(payload)
+		except json.JSONDecodeError:
+			return False, None
+		if not isinstance(data, dict):
+			return False, None
+		parsed: Dict[str, float] = {}
+		for key, value in data.items():
+			try:
+				parsed[str(key)] = float(value)
+			except (TypeError, ValueError):
+				return False, None
+		return True, parsed
+
+	def _measurement_data_text_changed(self) -> None:
+		text = self.measurement_data_input.toPlainText()
+		self.solver_params.measurement_data = text
+		valid, _parsed = self._parse_measurement_data_input(text)
+		self._measurement_data_valid = valid
+		self._set_measurement_data_input_validity(valid)
 
 	def _parse_measurement_input(self, text: str) -> tuple[bool, object, List[str]]:
 		value = text.strip()
@@ -3075,89 +3024,64 @@ class MainWindow(QtWidgets.QMainWindow):
 				names.append(os.path.splitext(entry)[0])
 		return sorted(names)
 
-	def _scenario_payload(self) -> Dict[str, object]:
-		payload = asdict(self.scenario_params)
-		wdn = self.wdn_input.currentText().strip() or self.scenario_params.wdn
-		scenario_name = self.scenario_name.text().strip() or self.scenario_params.scenario_name
-		payload.update(
-			{
-				"WDN": wdn,
-				"SCENARIO_NAME": scenario_name,
-				"SCENARIO_SOURCE": self.scenario_source.currentText(),
-				"PIPE_BOUNDS": self.pipe_bounds.isChecked(),
-				"PIPE_BOUND_SAFENESS": self.pipe_bound_safeness.value(),
-				"PIPE_BOUND_METHOD": self.pipe_bound_method.currentText(),
-				"PIPE_BOUND_POLICY": self.pipe_bound_policy.currentText(),
-				"PIPE_BOUND_PERTURB_SAMPLES": self.pipe_bound_samples.value(),
-				"PIPE_BOUND_PERTURB_SIGMA": self.pipe_bound_sigma.value(),
-				"PIPE_BOUND_PERTURB_SEED": self.pipe_bound_seed.value(),
-				"PIPE_BOUND_PERTURB_FIX_TOTAL": self.pipe_bound_fix_total.isChecked(),
-				"PIPE_BOUND_PERTURB_BASE": self.pipe_bound_base.currentText(),
-				"DIRICHLET_EXTRA_DEMAND": self.dirichlet_extra_demand.value(),
-				"DIRICHLET_MIN_DEVIATION": self.dirichlet_min_deviation.value(),
-				"DIRICHLET_MAX_DEVIATION": self.dirichlet_max_deviation.value(),
-				"DIRICHLET_SAMPLES": self.dirichlet_samples.value(),
-				"DIRICHLET_SEED": self.dirichlet_seed.value(),
-			}
-		)
-		return payload
-
 	def _solver_payload_from_widget(self, model_widget: "SolverModelWidget") -> Dict[str, object]:
 		payload = asdict(self.solver_params)
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
-		scenario_name = self.solver_scenario_name.text().strip() or self.solver_params.scenario_name
+		measurement_data = None
+		if self._measurement_source_value() == "custom":
+			_valid, parsed = self._parse_measurement_data_input(self.measurement_data_input.toPlainText())
+			measurement_data = parsed
 		payload.update(
 			{
 				"WDN": wdn,
-				"SCENARIO": scenario_name,
-				"SCENARIO_FILE": os.path.join("scenario", wdn, f"{scenario_name}.json"),
+				"MODE": self._current_mode(),
 				"MEASUREMENT_SITES": self._measurement_value,
+				"MEASUREMENT_SOURCE": self._measurement_source_value(),
+				"MEASUREMENT_DATA": measurement_data,
 			}
 		)
 		payload.update(model_widget.get_payload())
 		return payload
 
-	def _generate_scenario(self) -> None:
-		payload = self._scenario_payload()
-		wdn = str(payload.get("WDN", "wdn"))
-		scenario_hash = compute_hash(payload)
-		index_path = _scenario_index_path(wdn)
-		index = _load_index_with_legacy(index_path, LEGACY_SCENARIO_INDEX)
-		cached_path = index.get(scenario_hash)
-		resolved_scenario = (cached_path if os.path.isabs(cached_path) else os.path.join(ROOT_DIR, cached_path)) if cached_path else None
-		if resolved_scenario and os.path.exists(resolved_scenario):
-			self.status_bar.showMessage(f"Scenario cached: {cached_path}")
-			self.solver_scenario_name.setText(str(payload.get("SCENARIO_NAME", "")))
-			return
+	def _expand_measurement_sets(self) -> List[List[str]]:
+		from itertools import combinations as _combinations
 
-		scenario_name = payload.get("SCENARIO_NAME", "scenario")
-		output_path = os.path.join("scenario", wdn, f"{scenario_name}.json")
-		payload["SCENARIO_HASH"] = scenario_hash
+		value = self._measurement_value
+		if isinstance(value, list):
+			return [[str(x) for x in value]]
 
-		os.makedirs(CACHE_DIR, exist_ok=True)
-		config_path = os.path.join(CACHE_DIR, f"scenario-{scenario_hash}.json")
-		_write_json(config_path, payload)
+		if isinstance(value, str):
+			text = value.strip()
+			junction_nodes = self.plot.get_junction_nodes() if hasattr(self, "plot") else []
+			if text in {"", "#0"}:
+				return [[]]
+			m_exact = re.fullmatch(r"#(\d+)", text)
+			if m_exact:
+				k = int(m_exact.group(1))
+				if k < 0 or k > len(junction_nodes):
+					return []
+				if k == 0:
+					return [[]]
+				return [list(c) for c in _combinations(junction_nodes, k)]
 
-		cmd = [sys.executable, "scenario.py", "--config", config_path, "--output", output_path]
-		self.status_bar.showMessage("Generating scenario...")
-		proc = subprocess.run(cmd, capture_output=True, text=True)
-		self._store_output("Scenario Output", cmd, proc)
-		if proc.returncode != 0:
-			self.status_bar.showMessage(f"Scenario failed: {proc.stderr.strip()}")
-			return
+			m_range = re.fullmatch(r"#(\d+)-#(\d+)", text)
+			if m_range:
+				a = int(m_range.group(1))
+				b = int(m_range.group(2))
+				if a < 0 or b < 0 or a > b:
+					return []
+				if a > len(junction_nodes):
+					return []
+				b = min(b, len(junction_nodes))
+				sets: List[List[str]] = []
+				for k in range(a, b + 1):
+					if k == 0:
+						sets.append([])
+					else:
+						sets.extend(list(c) for c in _combinations(junction_nodes, k))
+				return sets
 
-		index[scenario_hash] = output_path
-		save_index(index_path, index, ROOT_DIR)
-		self.status_bar.showMessage(f"Scenario ready: {output_path}")
-		self.solver_scenario_name.setText(str(scenario_name))
-		try:
-			scenario_payload = _read_json(output_path)
-			base_flows = {k: float(v) for k, v in scenario_payload.get("base_flows", {}).items()}
-			c_bounds = {k: float(v) for k, v in scenario_payload.get("c_bounds", {}).items()}
-			C_bounds = {k: float(v) for k, v in scenario_payload.get("C_bounds", {}).items()}
-			self.plot.set_pipe_classes(base_flows, c_bounds, C_bounds)
-		except Exception as exc:
-			self.status_bar.showMessage(f"Scenario ready (plot skipped): {exc}")
+		return [[]]
 
 	def _run_solver(self) -> None:
 		if self._solver_worker is not None and self._solver_worker.isRunning():
@@ -3166,35 +3090,50 @@ class MainWindow(QtWidgets.QMainWindow):
 		if not self._measurement_valid:
 			QtWidgets.QMessageBox.warning(
 				self,
-				"Invalid Measurements",
-				"Measurements input is invalid. Valid examples:\n"
+				"Invalid Sites",
+				"Sites input is invalid. Valid examples:\n"
 				"- blank or #0\n"
 				"- #2\n"
 				"- #1-#3\n"
 				"- 1, 5, 8",
 			)
-			self.status_bar.showMessage("Solver not started: invalid measurement input.")
+			self.status_bar.showMessage("Solver not started: invalid site input.")
+			return
+
+		if not self._measurement_data_valid:
+			QtWidgets.QMessageBox.warning(
+				self,
+				"Invalid Measurement Data",
+				"Custom measurement data must be a JSON dictionary mapping node ids to numbers, with reserved keys like -1 for total demand.",
+			)
+			self.status_bar.showMessage("Solver not started: invalid measurement data input.")
 			return
 
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
 		_sync_wdn_index(wdn)
-		payload_a = self._solver_payload_from_widget(self.model_a)
-		scenario_path = str(payload_a.get("SCENARIO_FILE", ""))
-		if not scenario_path or not os.path.exists(scenario_path):
+		measurement_sets = self._expand_measurement_sets()
+		if not measurement_sets:
 			QtWidgets.QMessageBox.warning(
 				self,
-				"Scenario Missing",
-				f"Scenario file does not exist for selected WDN/scenario:\n{scenario_path}\n\n"
-				"Generate the scenario first, or choose a valid scenario name.",
+				"Invalid Sites",
+				"No valid site sets could be expanded from the site input.",
 			)
-			self.status_bar.showMessage("Solver not started: scenario file is missing.")
+			self.status_bar.showMessage("Solver not started: no valid site sets.")
 			return
 
-		self._pending_runs = [("A", payload_a)]
+		base_a = self._solver_payload_from_widget(self.model_a)
+		self._pending_runs = []
 		self._completed_runs = []
+		for nodes in measurement_sets:
+			payload_a = dict(base_a)
+			payload_a["MEASUREMENT_SITES"] = nodes
+			self._pending_runs.append(("A", payload_a))
 		if self.comparison_mode_check.isChecked():
-			payload_b = self._solver_payload_from_widget(self.model_b)
-			self._pending_runs.append(("B", payload_b))
+			base_b = self._solver_payload_from_widget(self.model_b)
+			for nodes in measurement_sets:
+				payload_b = dict(base_b)
+				payload_b["MEASUREMENT_SITES"] = nodes
+				self._pending_runs.append(("B", payload_b))
 
 		self.solve_button.setEnabled(False)
 		self.progress_bar.setRange(0, 1)
