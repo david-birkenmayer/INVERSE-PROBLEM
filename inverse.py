@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import os
@@ -451,6 +450,8 @@ def _build_parameters_snapshot(
     headloss_model_local: str,
     measurement_data: Dict[str, float] | None,
 ) -> Dict[str, object]:
+    extra_demand = _RAW_CONFIG.get("EXTRA_DEMAND") if isinstance(_RAW_CONFIG, dict) else None
+    demand_model = _RAW_CONFIG.get("DEMAND_MODEL") if isinstance(_RAW_CONFIG, dict) else None
     return {
         "WDN": WDN,
         "WDN_NAME": WDN,
@@ -476,6 +477,8 @@ def _build_parameters_snapshot(
         "HEXALY_VERBOSITY": HEXALY_VERBOSITY,
         "OUTPUT_DIR": OUTPUT_DIR,
         "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS,
+        "EXTRA_DEMAND": extra_demand,
+        "DEMAND_MODEL": demand_model,
     }
 
 
@@ -536,7 +539,6 @@ def main() -> None:
         )
 
     print(f"PROGRESS_TOTAL: {len(sensor_sets)}", flush=True)
-    summary_rows: List[Dict[str, object]] = []
 
     rng = np.random.default_rng(MULTI_START_SEED)
     junctions = list(network.junctions.keys())
@@ -594,6 +596,22 @@ def main() -> None:
             center_state.get("heads", base_heads) if center_state is not None else base_heads
         )
 
+        demand_lb_per_node = {
+            j: max(float(DEMAND_LB), float(reference_demands_local.get(j, DEMAND_LB)))
+            for j in reference_demands_local
+        }
+
+        # With per-node Dirichlet lower bounds (d_j >= base_j for all j),
+        # enforcing sum(d_j) == base_total simultaneously forces d_j == base_j
+        # exactly, leaving no room for demand variation.  Only pass a total-demand
+        # equality constraint when the measured value genuinely exceeds the base
+        # total (i.e. the measurement captured extra demand above the base).
+        base_total = float(sum(reference_demands_local.values()))
+        solver_total_demand: "float | None" = (
+            total_demand_local if total_demand_local is not None and total_demand_local > base_total + 1e-6
+            else None
+        )
+
         base_guess = SolverResult(
             status="base",
             demands=dict(reference_demands),
@@ -640,7 +658,8 @@ def main() -> None:
                     initial_guess=run_guess,
                     norm_p=float(NORM),
                     demand_lb=float(DEMAND_LB),
-                    total_demand=total_demand_local,
+                    demand_lb_per_node=demand_lb_per_node,
+                    total_demand=solver_total_demand,
                     measurement_nodes=measurement_nodes,
                     measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
                     match_reservoir_outflow_between_pairs=bool(MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS),
@@ -668,7 +687,8 @@ def main() -> None:
                     initial_guess=run_guess,
                     norm_p=float(NORM),
                     demand_lb=float(DEMAND_LB),
-                    total_demand=total_demand_local,
+                    demand_lb_per_node=demand_lb_per_node,
+                    total_demand=solver_total_demand,
                     measurement_nodes=measurement_nodes,
                     measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
                     reference_demands=reference_demands_local,
@@ -696,7 +716,8 @@ def main() -> None:
                     initial_guess=run_guess,
                     norm_p=float(NORM),
                     demand_lb=float(DEMAND_LB),
-                    total_demand=total_demand_local,
+                    demand_lb_per_node=demand_lb_per_node,
+                    total_demand=solver_total_demand,
                     license_path=str(HEXALY_LICENSE_PATH),
                     time_limit=int(HEXALY_TIME_LIMIT),
                     seed=hexaly_seed,
@@ -828,6 +849,7 @@ def main() -> None:
                 "C_h": head_c,
                 "norm": float(NORM),
                 "p": len(measurement_nodes),
+                "success": bool(best_result.success),
                 "max_violation": float(best_result.max_violation),
                 "min_demand_viol": float(best_result.min_demand_viol),
                 "objective": best_result.objective,
@@ -881,42 +903,6 @@ def main() -> None:
                 "method": method,
             },
         )
-
-        summary_rows.append(
-            {
-                "measurement_sites": measurement_nodes,
-                "measurement_count": len(measurement_nodes),
-                "radius": best_value,
-                "mode": mode,
-                "method": method,
-                "W_d": demand_w,
-                "C_d": demand_c,
-                "W_h": head_w,
-                "C_h": head_c,
-                "success": bool(best_result.success),
-                "max_violation": float(best_result.max_violation),
-                "min_demand_viol": float(best_result.min_demand_viol),
-                "objective": best_result.objective,
-                "solver_status": best_result.solver_status,
-                "best_bound": best_result.best_bound,
-                "output_dir": output_dir,
-            }
-        )
-
-    if summary_rows:
-        summary_rows = sorted(summary_rows, key=lambda r: (int(r["measurement_count"]), float(r["radius"])))
-        summary_root = batch_dir if batch_dir else "data"
-        summary_json = os.path.join(summary_root, f"{WDN}-measurement-summary-{master_timestamp}.json")
-        summary_csv = os.path.join(summary_root, f"{WDN}-measurement-summary-{master_timestamp}.csv")
-        _write_json(summary_json, {"results": summary_rows})
-
-        with open(summary_csv, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(summary_rows)
-
-        print(f"Wrote measurement summary to: {summary_json}")
-        print(f"GUI_SUMMARY_CSV: {summary_csv}")
 
     _register_output_dir(SOLVER_HASH, OUTPUT_DIR, WDN)
 

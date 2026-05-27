@@ -424,6 +424,7 @@ def solve_max_demand_distance_xd_hexaly(
     initial_guess: Optional[SolverResult] = None,
     norm_p: float = 2.0,
     demand_lb: float = 0.0,
+    demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = True,
@@ -505,12 +506,13 @@ def solve_max_demand_distance_xd_hexaly(
                     outflow_b.append(qB[p])
             dA[j] = _sum_expr(m, inflow_a) - _sum_expr(m, outflow_a)
             dB[j] = _sum_expr(m, inflow_b) - _sum_expr(m, outflow_b)
-            m.constraint(dA[j] >= demand_lb)
+            _lb = float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb)
+            m.constraint(dA[j] >= _lb)
             if fixed_demands_b is not None:
                 ref = float(fixed_demands_b.get(j, 0.0))
                 m.constraint(dB[j] == ref)
             else:
-                m.constraint(dB[j] >= demand_lb)
+                m.constraint(dB[j] >= _lb)
 
         if restriction_mode is not None:
             if restriction_mode not in {"radius_to_fixed", "deviation_to_fixed"}:
@@ -643,7 +645,11 @@ def solve_max_demand_distance_xd_hexaly(
     max_violation = 0.0
     min_demand_viol = 0.0
     if d_a or d_b:
-        min_demand_viol = min(min(d_a.values()), min(d_b.values())) - demand_lb
+        all_d = list(d_a.items()) + list(d_b.items())
+        min_demand_viol = min(
+            v - (float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb))
+            for j, v in all_d
+        )
     objective_val = _compute_objective_value(d_a, d_b, norm_p)
     status_msg = str(status)
     # best_bound retrieved inside the solver context

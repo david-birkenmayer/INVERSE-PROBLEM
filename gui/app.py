@@ -135,6 +135,19 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		C_bounds = {}
 
 	measurement_nodes = [str(x) for x in params.get("MEASUREMENT_NODES") or []]
+	measurement_data = params.get("MEASUREMENT_DATA") if isinstance(params.get("MEASUREMENT_DATA"), dict) else {}
+	measurement_total_demand = None
+	if isinstance(measurement_data, dict) and "-1" in measurement_data:
+		try:
+			measurement_total_demand = float(measurement_data.get("-1"))
+		except (TypeError, ValueError):
+			measurement_total_demand = None
+	configured_extra_demand = None
+	if "EXTRA_DEMAND" in params:
+		try:
+			configured_extra_demand = float(params.get("EXTRA_DEMAND"))
+		except (TypeError, ValueError):
+			configured_extra_demand = None
 	plot_demand_distance(
 		inp_path=inp_path,
 		measurement_nodes=measurement_nodes,
@@ -159,6 +172,8 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		output_dir=temp_dir,
 		c_bounds=c_bounds,
 		C_bounds=C_bounds,
+		measurement_total_demand=measurement_total_demand,
+		configured_extra_demand=configured_extra_demand,
 	)
 
 	src_png = os.path.join(temp_dir, "demand_distance.png")
@@ -3250,41 +3265,44 @@ class MainWindow(QtWidgets.QMainWindow):
 					dirs_with_labels.append((d, label))
 			self._show_demand_distance_plots(dirs_with_labels)
 
-	def _parse_summary_csv_path(self, stdout: str) -> "str | None":
-		for line in stdout.splitlines():
-			if line.startswith("GUI_SUMMARY_CSV:"):
-				return line[len("GUI_SUMMARY_CSV:"):].strip()
-		return None
-
-	def _find_summary_csv_in_output(self, out_dir: str) -> "str | None":
-		"""Fallback lookup for cached runs where stdout has no CSV marker."""
-		if not out_dir or not os.path.isdir(out_dir):
-			return None
-		matches: List[str] = []
-		for current, _dirs, files in os.walk(out_dir):
-			for name in files:
-				if "measurement-summary" in name and name.lower().endswith(".csv"):
-					matches.append(os.path.join(current, name))
-		if not matches:
-			return None
-		matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-		return matches[0]
-
 	def _collect_result_rows(self) -> "List[Dict[str, str]]":
-		import csv as _csv
 		rows: List[Dict[str, str]] = []
-		for label, rc, stdout, _stderr, out_dir in self._completed_runs:
-			if rc != 0:
+		for label, rc, _stdout, _stderr, out_dir in self._completed_runs:
+			if rc != 0 or not out_dir:
 				continue
-			csv_path = self._parse_summary_csv_path(stdout)
-			if (not csv_path) or (not os.path.isfile(csv_path)):
-				csv_path = self._find_summary_csv_in_output(str(out_dir))
-			if csv_path and os.path.isfile(csv_path):
-				with open(csv_path, newline="", encoding="utf-8") as fh:
-					reader = _csv.DictReader(fh)
-					for row in reader:
-						row["model"] = label
-						rows.append(dict(row))
+			for data_dir in self._collect_demand_distance_dirs(str(out_dir)):
+				dd_path = os.path.join(data_dir, "demand_distance.json")
+				params_path = os.path.join(data_dir, "parameters.json")
+				try:
+					with open(dd_path, encoding="utf-8") as fh:
+						dd = json.load(fh)
+					params: Dict[str, object] = {}
+					if os.path.isfile(params_path):
+						with open(params_path, encoding="utf-8") as fh:
+							params = json.load(fh)
+					meas_nodes = params.get("MEASUREMENT_NODES", [])
+					row: Dict[str, str] = {
+						"measurement_sites": str(meas_nodes),
+						"measurement_count": str(len(meas_nodes) if isinstance(meas_nodes, list) else 0),
+						"radius": str(dd.get("radius", "")),
+						"mode": str(dd.get("mode", "")),
+						"method": str(dd.get("method", "")),
+						"W_d": str(dd.get("W_d", "")),
+						"C_d": str(dd.get("C_d", "")),
+						"W_h": str(dd.get("W_h", "")),
+						"C_h": str(dd.get("C_h", "")),
+						"success": str(dd.get("success", "")),
+						"max_violation": str(dd.get("max_violation", "")),
+						"min_demand_viol": str(dd.get("min_demand_viol", "")),
+						"objective": str(dd.get("objective", "")),
+						"solver_status": str(dd.get("solver_status", "")),
+						"best_bound": str(dd.get("best_bound", "")),
+						"output_dir": data_dir,
+						"model": label,
+					}
+					rows.append(row)
+				except Exception:
+					pass
 		return rows
 
 	def _collect_demand_distance_dirs(self, root_dir: str) -> List[str]:

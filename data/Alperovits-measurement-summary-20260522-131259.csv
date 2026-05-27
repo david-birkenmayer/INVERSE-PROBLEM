@@ -1,2 +1,0 @@
-measurement_sites,measurement_count,radius,mode,method,W_d,C_d,W_h,C_h,success,max_violation,min_demand_viol,objective,solver_status,best_bound,output_dir
-['5'],1,1.5622729772710087,W_d,xd,1.5622729772710087,1.0003808056514905,0.4386394033503014,0.6616087290936853,True,0.0,-9.66980161025809e-07,2.440696855511222,HxSolutionStatus.OPTIMAL,,data/Alperovits/ec33a135

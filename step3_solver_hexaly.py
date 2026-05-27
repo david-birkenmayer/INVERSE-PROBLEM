@@ -140,6 +140,7 @@ def solve_max_demand_distance_hexaly(
     initial_guess: Optional[SolverResult] = None,
     norm_p: float = 2.0,
     demand_lb: float = 0.0,
+    demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = False,
@@ -237,8 +238,9 @@ def solve_max_demand_distance_hexaly(
                     outflow_b.append(qB[p])
             dA[j] = _sum_expr(m, inflow_a) - _sum_expr(m, outflow_a)
             dB[j] = _sum_expr(m, inflow_b) - _sum_expr(m, outflow_b)
-            m.constraint(dA[j] >= demand_lb)
-            m.constraint(dB[j] >= demand_lb)
+            _lb = float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb)
+            m.constraint(dA[j] >= _lb)
+            m.constraint(dB[j] >= _lb)
 
         if restriction_mode is not None:
             if restriction_mode not in {"radius_to_fixed", "deviation_to_fixed"}:
@@ -404,7 +406,11 @@ def solve_max_demand_distance_hexaly(
 
     min_demand_viol = 0.0
     if d_a or d_b:
-        min_demand_viol = min(min(d_a.values()), min(d_b.values())) - demand_lb
+        all_d = list(d_a.items()) + list(d_b.items())
+        min_demand_viol = min(
+            v - (float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb))
+            for j, v in all_d
+        )
     objective_val = _compute_objective_value(d_a, d_b, norm_p)
     status_msg = str(status)
 
@@ -448,6 +454,7 @@ def solve_head_center_in_class_hexaly(
     initial_guess: Optional[SolverResult] = None,
     norm_p: float = 2.0,
     demand_lb: float = 0.0,
+    demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
     license_path: Optional[str] = None,
     time_limit: Optional[int] = None,
@@ -519,7 +526,8 @@ def solve_head_center_in_class_hexaly(
                 if pipe.start_node == j:
                     outflow.append(q[p])
             d[j] = _sum_expr(m, inflow) - _sum_expr(m, outflow)
-            m.constraint(d[j] >= demand_lb)
+            _lb = float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb)
+            m.constraint(d[j] >= _lb)
 
         if total_demand is not None:
             m.constraint(_sum_expr(m, list(d.values())) == float(total_demand))
@@ -626,7 +634,10 @@ def solve_head_center_in_class_hexaly(
 
     min_demand_viol = 0.0
     if d_sol:
-        min_demand_viol = min(d_sol.values()) - demand_lb
+        min_demand_viol = min(
+            v - (float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb))
+            for j, v in d_sol.items()
+        )
 
     all_nodes = list(network.nodes.keys())
     dist_a = _norm_from_diffs([h_sol.get(n, 0.0) - float(reference_heads_a.get(n, 0.0)) for n in all_nodes], norm_p)

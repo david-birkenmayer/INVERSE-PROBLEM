@@ -283,6 +283,8 @@ def plot_demand_distance(
 	output_dir: str,
 	c_bounds: Dict[str, float],
 	C_bounds: Dict[str, float],
+	measurement_total_demand: float | None = None,
+	configured_extra_demand: float | None = None,
 ) -> None:
 	import matplotlib.pyplot as plt
 	from matplotlib.offsetbox import AnnotationBbox, TextArea, HPacker, VPacker
@@ -291,6 +293,12 @@ def plot_demand_distance(
 
 	wn = wntr.network.WaterNetworkModel(inp_path)
 	pos = {name: (node.coordinates[0], node.coordinates[1]) for name, node in wn.nodes()}
+	base_demands = {
+		name: float((node.demand_timeseries_list[0].base_value or 0.0))
+		if node.demand_timeseries_list is not None and len(node.demand_timeseries_list) > 0
+		else 0.0
+		for name, node in wn.junctions()
+	}
 
 	G = nx.Graph()
 	for name, node in wn.nodes():
@@ -355,12 +363,23 @@ def plot_demand_distance(
 		db = float(demands_b.get(node_id, 0.0))
 		ha = float(heads_a.get(node_id, float("nan")))
 		hb = float(heads_b.get(node_id, float("nan")))
+		d0 = float(base_demands.get(node_id, 0.0))
 		green = "#2f855a"
 		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}"]
 		colors_d = ["#111111", "#2b6cb0", "#111111", green]
 		segments_h = ["h = ", f"{ha:.4f}", " | ", f"{hb:.4f}"]
 		colors_h = ["#111111", "#2b6cb0", "#111111", green]
 		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
+		ax.text(
+			x,
+			y - 285,
+			f"d0={d0:.4f}",
+			fontsize=7,
+			ha="center",
+			va="top",
+			color="#111111",
+			bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
+		)
 
 	for node_id in wn.reservoir_name_list:
 		if node_id not in pos:
@@ -413,24 +432,38 @@ def plot_demand_distance(
 	h_nodes = sorted(set(heads_a.keys()) | set(heads_b.keys()))
 	d_norm_pair = _p_norm(float(demands_a.get(n, 0.0)) - float(demands_b.get(n, 0.0)) for n in d_nodes)
 	h_norm_pair = _p_norm(float(heads_a.get(n, 0.0)) - float(heads_b.get(n, 0.0)) for n in h_nodes)
+	base_total = float(sum(base_demands.values()))
+	total_a = float(sum(float(v) for v in demands_a.values()))
+	total_b = float(sum(float(v) for v in demands_b.values()))
+	extra_a = total_a - base_total
+	extra_b = total_b - base_total
 
 	mode_text = str(mode or "W_d")
-	ax.set_title(
-		f"Max solution (mode={mode_text}, {norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
-	)
 	metric_text = (
 		f"W_d={float(metrics.get('W_d', float('nan'))):.5f}, "
 		f"C_d={float(metrics.get('C_d', float('nan'))):.5f}, "
 		f"W_h={float(metrics.get('W_h', float('nan'))):.5f}, "
 		f"C_h={float(metrics.get('C_h', float('nan'))):.5f}"
 	)
-	pair_text = f"pair norms: ||dA-dB||={d_norm_pair:.5f}, ||hA-hB||={h_norm_pair:.5f}"
+	pair_text = f"||dA-dB||={d_norm_pair:.5f}, ||hA-hB||={h_norm_pair:.5f}"
+	extra_parts = [f"extra(A)={extra_a:.5f}", f"extra(B)={extra_b:.5f}"]
+	if measurement_total_demand is not None:
+		extra_parts.append(f"target_extra={float(measurement_total_demand) - base_total:.5f}")
+	if configured_extra_demand is not None:
+		extra_parts.append(f"cfg_extra={float(configured_extra_demand):.5f}")
+	extra_text = " | ".join(extra_parts)
 	center_text = ""
 	if center_side in {"blue", "green"} and center_symbol:
 		center_text = f" | center ({center_symbol}) = {center_side}"
-	ax.text(0.5, 1.01, f"{metric_text} | {pair_text}{center_text}", transform=ax.transAxes, ha="center", va="bottom", fontsize=8)
+	ax.set_title(
+		f"Max solution (mode={mode_text}, {norm_label}-norm, p={measurement_count}, radius={radius:.5f})\n"
+		f"{metric_text} | pair norms: {pair_text}\n"
+		f"{extra_text}{center_text}",
+		fontsize=9,
+		pad=6,
+	)
 	ax.axis("off")
-	plt.tight_layout()
+	plt.tight_layout(rect=[0, 0, 1, 1])
 	fig.savefig(os.path.join(output_dir, "demand_distance.png"), dpi=200)
 	plt.close(fig)
 
@@ -505,6 +538,8 @@ def main() -> None:
 			output_dir=DATA_DIR,
 			c_bounds=c_bounds,
 			C_bounds=C_bounds,
+			measurement_total_demand=None,
+			configured_extra_demand=None,
 		)
 
 	demand_bounds = _load_optional_json(os.path.join(DATA_DIR, "demand_bounds.json"))
