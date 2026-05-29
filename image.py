@@ -284,6 +284,7 @@ def plot_demand_distance(
 	c_bounds: Dict[str, float],
 	C_bounds: Dict[str, float],
 	measurement_total_demand: float | None = None,
+	solver_reference_demands: Dict[str, float] | None = None,
 	configured_extra_demand: float | None = None,
 ) -> None:
 	import matplotlib.pyplot as plt
@@ -299,6 +300,9 @@ def plot_demand_distance(
 		else 0.0
 		for name, node in wn.junctions()
 	}
+	if solver_reference_demands is not None:
+		for node_id, value in solver_reference_demands.items():
+			base_demands[str(node_id)] = float(value)
 
 	G = nx.Graph()
 	for name, node in wn.nodes():
@@ -365,21 +369,11 @@ def plot_demand_distance(
 		hb = float(heads_b.get(node_id, float("nan")))
 		d0 = float(base_demands.get(node_id, 0.0))
 		green = "#2f855a"
-		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}"]
-		colors_d = ["#111111", "#2b6cb0", "#111111", green]
+		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}", " | d0=", f"{d0:.4f}"]
+		colors_d = ["#111111", "#2b6cb0", "#111111", green, "#111111", "#111111"]
 		segments_h = ["h = ", f"{ha:.4f}", " | ", f"{hb:.4f}"]
 		colors_h = ["#111111", "#2b6cb0", "#111111", green]
 		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
-		ax.text(
-			x,
-			y - 285,
-			f"d0={d0:.4f}",
-			fontsize=7,
-			ha="center",
-			va="top",
-			color="#111111",
-			bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75},
-		)
 
 	for node_id in wn.reservoir_name_list:
 		if node_id not in pos:

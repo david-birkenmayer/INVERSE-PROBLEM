@@ -426,6 +426,7 @@ def solve_max_demand_distance_xd_hexaly(
     demand_lb: float = 0.0,
     demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
+    total_demand_upper: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = True,
     match_reservoir_outflow_between_pairs: bool = False,
@@ -557,6 +558,9 @@ def solve_max_demand_distance_xd_hexaly(
         if total_demand is not None:
             m.constraint(_sum_expr(m, list(dA.values())) == float(total_demand))
             m.constraint(_sum_expr(m, list(dB.values())) == float(total_demand))
+        elif total_demand_upper is not None:
+            m.constraint(_sum_expr(m, list(dA.values())) <= float(total_demand_upper))
+            m.constraint(_sum_expr(m, list(dB.values())) <= float(total_demand_upper))
 
         if reservoir_node is not None and reservoir_outflow is not None:
             net_a = []
@@ -643,6 +647,14 @@ def solve_max_demand_distance_xd_hexaly(
     )
 
     max_violation = 0.0
+    if total_demand is not None:
+        max_violation = max(max_violation, abs(sum(d_a.values()) - float(total_demand)), abs(sum(d_b.values()) - float(total_demand)))
+    elif total_demand_upper is not None:
+        max_violation = max(
+            max_violation,
+            max(0.0, sum(d_a.values()) - float(total_demand_upper)),
+            max(0.0, sum(d_b.values()) - float(total_demand_upper)),
+        )
     min_demand_viol = 0.0
     if d_a or d_b:
         all_d = list(d_a.items()) + list(d_b.items())

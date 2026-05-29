@@ -2,6 +2,7 @@ import json
 import os
 import re
 import hashlib
+import math
 import shutil
 import subprocess
 import sys
@@ -142,6 +143,15 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 			measurement_total_demand = float(measurement_data.get("-1"))
 		except (TypeError, ValueError):
 			measurement_total_demand = None
+	solver_reference_demands = None
+	if isinstance(demand_distance.get("reference_demands"), dict):
+		try:
+			solver_reference_demands = {
+				str(k): float(v)
+				for k, v in demand_distance.get("reference_demands", {}).items()
+			}
+		except (TypeError, ValueError):
+			solver_reference_demands = None
 	configured_extra_demand = None
 	if "EXTRA_DEMAND" in params:
 		try:
@@ -173,6 +183,7 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		c_bounds=c_bounds,
 		C_bounds=C_bounds,
 		measurement_total_demand=measurement_total_demand,
+		solver_reference_demands=solver_reference_demands,
 		configured_extra_demand=configured_extra_demand,
 	)
 
@@ -196,6 +207,42 @@ def _load_index_with_legacy(path: str, legacy_path: str) -> Dict[str, str]:
 	if index:
 		return index
 	return load_index(legacy_path, ROOT_DIR)
+
+
+def _solver_cache_hash_payload(payload: Dict[str, object]) -> Dict[str, object]:
+	"""Keep only canonical solver config keys for cache hashing.
+
+	GUI state contains lowercase helper fields (from SolverParams) that must not
+	affect cache identity.
+	"""
+	return {
+		str(k): v
+		for k, v in payload.items()
+		if isinstance(k, str)
+		and k.isupper()
+		and k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS"}
+	}
+
+
+def _float_or_default(value: object, default: float) -> float:
+	try:
+		if isinstance(value, str):
+			text = value.strip().lower()
+			if text in {"", "inf", "+inf", "infinity", "+infinity"}:
+				return float("inf")
+			if text in {"-inf", "-infinity"}:
+				return -float("inf")
+		return float(value)
+	except (TypeError, ValueError):
+		return default
+
+
+def _dms_cache_conclusive(dd: Dict[str, object], reference_radius: float) -> tuple[bool, float, float, str]:
+	lower = _float_or_default(dd.get("dms_lower_bound"), -float("inf"))
+	upper = _float_or_default(dd.get("dms_upper_bound"), float("inf"))
+	cert = str(dd.get("dms_certificate", ""))
+	conclusive = (reference_radius < lower) or (reference_radius > upper)
+	return conclusive, lower, upper, cert
 
 
 class SolverWorker(QtCore.QThread):
@@ -307,17 +354,30 @@ class LocalSearchWorker(QtCore.QThread):
 		self._rows: List[Dict[str, str]] = []
 		self._lookup: Dict[frozenset, float] = {}
 		self._cancelled = False
+		self._last_eval_unclear = False
 
 	def cancel(self) -> None:
 		self._cancelled = True
 
 	def run(self) -> None:
 		current: frozenset = frozenset(self._start_nodes)
+		dms_enabled = bool(self._payload_template.get("DYNAMIC_MULTISTART", False))
+		discard_unclear = bool(self._payload_template.get("DMS_DISCARD_UNCLEAR", True))
 		while not self._cancelled:
 			if current not in self._lookup:
-				radius = self._evaluate(current)
+				radius = self._evaluate(current, float("inf") if dms_enabled else None)
 				if radius is None:
-					self.status_updated.emit(f"Solver failed for {sorted(current)}, stopping.")
+					if dms_enabled and self._last_eval_unclear:
+						if discard_unclear:
+							self.status_updated.emit(
+								f"Starting configuration {sorted(current)} is inconclusive under DMS cap; stopping."
+							)
+						else:
+							self.status_updated.emit(
+								f"Unclear configuration {sorted(current)} encountered; stopping because discard unclear is disabled."
+							)
+					else:
+						self.status_updated.emit(f"Solver failed for {sorted(current)}, stopping.")
 					break
 				self._lookup[current] = radius
 			current_radius = self._lookup[current]
@@ -326,18 +386,31 @@ class LocalSearchWorker(QtCore.QThread):
 			candidates = self._generate_neighbors(current)
 			best: "frozenset | None" = None
 			best_radius = current_radius
+			abort_search = False
 			for candidate in candidates:
 				if self._cancelled:
 					break
 				if candidate not in self._lookup:
-					radius = self._evaluate(candidate)
+					radius = self._evaluate(candidate, current_radius if dms_enabled else None)
 					if radius is None:
+						if dms_enabled and self._last_eval_unclear:
+							if discard_unclear:
+								self.status_updated.emit(f"Discarding inconclusive configuration {sorted(candidate)}.")
+								continue
+							self.status_updated.emit(
+								f"Unclear configuration {sorted(candidate)} encountered; stopping because discard unclear is disabled."
+							)
+							abort_search = True
+							break
 						continue
 					self._lookup[candidate] = radius
 				r = self._lookup[candidate]
 				if r < best_radius:
 					best_radius = r
 					best = candidate
+
+			if abort_search:
+				break
 
 			if best is None or self._cancelled:
 				if not self._cancelled:
@@ -362,17 +435,40 @@ class LocalSearchWorker(QtCore.QThread):
 						candidates.append(candidate)
 		return candidates
 
-	def _evaluate(self, config: frozenset) -> "float | None":
+	def _evaluate(self, config: frozenset, dms_reference_radius: float | None = None) -> "float | None":
+		self._last_eval_unclear = False
 		nodes = sorted(config)
 		payload = dict(self._payload_template)
 		payload["MEASUREMENT_SITES"] = nodes
-		solver_hash = compute_hash(payload)
+		expected_dms = bool(payload.get("DYNAMIC_MULTISTART", False))
+		if expected_dms and dms_reference_radius is not None:
+			payload["DMS_RADIUS"] = float(dms_reference_radius)
+		expected_mode = str(payload.get("MODE", ""))
+		expected_method = str(payload.get("METHOD", ""))
+		expected_source = str(payload.get("MEASUREMENT_SOURCE", ""))
+		solver_hash = compute_hash(_solver_cache_hash_payload(payload))
 		cached_dir = self._index.get(solver_hash)
 		if cached_dir:
 			resolved_dir = cached_dir if os.path.isabs(cached_dir) else os.path.join(ROOT_DIR, cached_dir)
 			if os.path.isdir(resolved_dir):
-				return self._read_radius(resolved_dir, nodes, cached=True)
-		output_dir = os.path.join("data", self._wdn, solver_hash[:8])
+				radius = self._read_radius(
+					resolved_dir,
+					nodes,
+					expected_mode,
+					expected_method,
+					expected_source,
+					expected_dms,
+					dms_reference_radius,
+					cached=True,
+				)
+				if radius is not None:
+					return radius
+				# Drop stale/invalid cache entries so future runs recompute cleanly.
+				# Keep DMS entries: they can be valid but inconclusive for the current r.
+				if not expected_dms:
+					self._index.pop(solver_hash, None)
+					save_index(self._index_path, self._index, ROOT_DIR)
+		output_dir = os.path.join("data", self._wdn, solver_hash)
 		payload["OUTPUT_DIR"] = output_dir
 		payload["SOLVER_HASH"] = solver_hash
 		os.makedirs(CACHE_DIR, exist_ok=True)
@@ -386,27 +482,121 @@ class LocalSearchWorker(QtCore.QThread):
 		)
 		resolvedout = output_dir if os.path.isabs(output_dir) else os.path.join(ROOT_DIR, output_dir)
 		if proc.returncode != 0 or not os.path.isdir(resolvedout):
-			self.status_updated.emit(f"Solver failed for {nodes}: {proc.stderr.strip()[:200]}")
+			err = (proc.stderr or "").strip()
+			out = (proc.stdout or "").strip()
+			detail = err if err else out
+			if len(detail) > 1200:
+				detail = detail[-1200:]
+			self.status_updated.emit(
+				f"Solver failed for {nodes}: {detail or 'no output captured'}"
+			)
+			return None
+		radius = self._read_radius(
+			resolvedout,
+			nodes,
+			expected_mode,
+			expected_method,
+			expected_source,
+			expected_dms,
+			dms_reference_radius,
+			cached=False,
+		)
+		if radius is None:
 			return None
 		self._index[solver_hash] = output_dir
 		save_index(self._index_path, self._index, ROOT_DIR)
 		_write_gui_hash(resolvedout, solver_hash)
-		return self._read_radius(resolvedout, nodes, cached=False)
-	def _read_radius(self, output_dir: str, nodes: List[str], *, cached: bool) -> "float | None":
-		dd_path = os.path.join(output_dir, "demand_distance.json")
-		if not os.path.isfile(dd_path):
-			for root, _dirs, files in os.walk(output_dir):
-				if "demand_distance.json" in files:
-					dd_path = os.path.join(root, "demand_distance.json")
-					break
-		if not os.path.isfile(dd_path):
+		return radius
+
+	def _read_radius(
+		self,
+		output_dir: str,
+		nodes: List[str],
+		expected_mode: str,
+		expected_method: str,
+		expected_source: str,
+		expected_dms: bool,
+		dms_reference_radius: float | None,
+		*,
+		cached: bool,
+	) -> "float | None":
+		expected_nodes = sorted(str(n) for n in nodes)
+		candidate_paths: List[str] = []
+		direct = os.path.join(output_dir, "demand_distance.json")
+		if os.path.isfile(direct):
+			candidate_paths.append(direct)
+		for root, _dirs, files in os.walk(output_dir):
+			if "demand_distance.json" in files:
+				path = os.path.join(root, "demand_distance.json")
+				if path not in candidate_paths:
+					candidate_paths.append(path)
+		if not candidate_paths:
 			return None
-		dd = _read_json(dd_path)
+
+		dd = None
+		for dd_path in candidate_paths:
+			try:
+				dd_candidate = _read_json(dd_path)
+			except Exception:
+				continue
+			params_path = os.path.join(os.path.dirname(dd_path), "parameters.json")
+			params: Dict[str, object] = {}
+			if os.path.isfile(params_path):
+				try:
+					params = _read_json(params_path)
+				except Exception:
+					params = {}
+			nodes_params = params.get("MEASUREMENT_NODES")
+			if isinstance(nodes_params, list):
+				if sorted(str(x) for x in nodes_params) != expected_nodes:
+					continue
+			source_candidate = str(params.get("MEASUREMENT_SOURCE", ""))
+			if expected_source and source_candidate and source_candidate != expected_source:
+				continue
+			mode_candidate = str(dd_candidate.get("mode", ""))
+			method_candidate = str(dd_candidate.get("method", ""))
+			if expected_mode and mode_candidate and mode_candidate != expected_mode:
+				continue
+			if expected_method and method_candidate and method_candidate != expected_method:
+				continue
+			dd = dd_candidate
+			break
+		if dd is None:
+			return None
+		success = bool(dd.get("success", False))
+		max_violation = float(dd.get("max_violation", float("inf")))
+		min_demand_viol = float(dd.get("min_demand_viol", -float("inf")))
+		solver_status = str(dd.get("solver_status", ""))
+		valid = success and max_violation <= 1e-5 and min_demand_viol >= -1e-5
+		if not valid:
+			self.status_updated.emit(
+				f"Ignoring {'cached ' if cached else ''}result for {nodes}: "
+				f"success={success}, max_violation={max_violation:.3e}, "
+				f"min_demand_viol={min_demand_viol:.3e}, status={solver_status}"
+			)
+			return None
+		if expected_dms and dms_reference_radius is not None:
+			conclusive, lower, upper, cert = _dms_cache_conclusive(dd, float(dms_reference_radius))
+			if not conclusive:
+				self._last_eval_unclear = True
+				self.status_updated.emit(
+					f"Ignoring {'cached ' if cached else ''}DMS result for {nodes}: "
+					f"r={float(dms_reference_radius):.6f} inside [{lower:.6f}, {upper:.6f}] "
+					f"(certificate={cert or 'n/a'})"
+				)
+				return None
 		radius = float(dd.get("radius", float("inf")))
 		row: Dict[str, str] = {
 			"measurement_sites": str(nodes),
 			"radius": f"{radius:.6f}",
 			"cached": str(cached),
+			"success": str(success),
+			"max_violation": f"{max_violation:.6e}",
+			"min_demand_viol": f"{min_demand_viol:.6e}",
+			"solver_status": solver_status,
+			"dms_certificate": str(dd.get("dms_certificate", "")),
+			"dms_lower_bound": str(dd.get("dms_lower_bound", "")),
+			"dms_upper_bound": str(dd.get("dms_upper_bound", "")),
 			"output_dir": output_dir,
 		}
 		self._rows.append(row)
@@ -421,6 +611,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 	def __init__(self, title: str, defaults: "SolverParams", parent: "QtWidgets.QWidget | None" = None) -> None:
 		super().__init__(title, parent)
 		self._rows: Dict[str, tuple[QtWidgets.QLabel, QtWidgets.QWidget]] = {}
+		self._solver_rows: Dict[str, tuple[QtWidgets.QLabel, QtWidgets.QWidget]] = {}
 		self._form: QtWidgets.QFormLayout | None = None
 		self._build_ui(defaults)
 
@@ -454,6 +645,19 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 			lbl.setVisible(visible)
 			w.setVisible(visible)
 
+	def _add_solver_row(self, form: QtWidgets.QFormLayout, key: str, label: str, widget: QtWidgets.QWidget) -> None:
+		row_label = QtWidgets.QLabel(label)
+		form.addRow(row_label, widget)
+		self._solver_rows[key] = (row_label, widget)
+
+	def _set_solver_row_visible(self, key: str, visible: bool) -> None:
+		row = self._solver_rows.get(key)
+		if not row:
+			return
+		lbl, w = row
+		lbl.setVisible(visible)
+		w.setVisible(visible)
+
 	def _build_ui(self, defaults: "SolverParams") -> None:
 		root = QtWidgets.QVBoxLayout(self)
 
@@ -469,7 +673,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		self._add_row(general_form, "heads_equal", "Heads Equal at Sensors", self.measurement_heads_equal)
 
 		self.match_total_demand = QtWidgets.QCheckBox()
-		self.match_total_demand.setChecked(defaults.match_reservoir_outflow_between_pairs)
+		self.match_total_demand.setChecked(bool(getattr(defaults, "match_total_demand", True)))
 		self._add_row(general_form, "match_total_demand", "Match Total Demand", self.match_total_demand)
 		root.addWidget(general_group)
 
@@ -480,26 +684,56 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		self.method.addItem("head loss (x)", "xd")
 		self.method.addItem("head (h)", "classical")
 		self.method.setCurrentIndex(max(0, self.method.findData(defaults.method)))
-		solver_form.addRow("Method", self.method)
+		self._add_solver_row(solver_form, "method", "Method", self.method)
 
 		self.demand_lb = self._new_double_spin(0.0, 1e6, defaults.demand_lb, decimals=8, step=1e-6)
-		solver_form.addRow("Demand LB", self.demand_lb)
+		self._add_solver_row(solver_form, "demand_lb", "Demand LB", self.demand_lb)
+
+		self.extra_demand = self._new_double_spin(0.0, 1e6, float(getattr(defaults, "extra_demand", 1.2)), decimals=6, step=0.1)
+		self._add_solver_row(solver_form, "extra_demand", "Extra Demand", self.extra_demand)
+
+		self.dynamic_multistart = QtWidgets.QCheckBox()
+		self.dynamic_multistart.setChecked(bool(getattr(defaults, "dynamic_multistart", False)))
+		self.dynamic_multistart.stateChanged.connect(lambda *_: self._update_visibility())
+		self._add_solver_row(solver_form, "dynamic_multistart", "Dynamic Multistart", self.dynamic_multistart)
 
 		self.multi_starts = QtWidgets.QSpinBox()
 		self.multi_starts.setRange(1, 100)
 		self.multi_starts.setValue(defaults.multi_starts)
-		solver_form.addRow("Multi Starts", self.multi_starts)
+		self._add_solver_row(solver_form, "multi_starts", "Multi Starts", self.multi_starts)
+
+		self.dms_consistency = QtWidgets.QSpinBox()
+		self.dms_consistency.setRange(1, 100)
+		self.dms_consistency.setValue(int(getattr(defaults, "dms_consistency", 3)))
+		self._add_solver_row(solver_form, "dms_consistency", "Consistency", self.dms_consistency)
+
+		self.dms_deviation = self._new_double_spin(0.0, 1.0, float(getattr(defaults, "dms_deviation", 0.95)), decimals=4, step=0.01)
+		self._add_solver_row(solver_form, "dms_deviation", "Deviation", self.dms_deviation)
+
+		self.dms_radius = QtWidgets.QLineEdit()
+		dms_radius_default = float(getattr(defaults, "dms_radius", float("inf")))
+		self.dms_radius.setText("inf" if math.isinf(dms_radius_default) else f"{dms_radius_default:g}")
+		self._add_solver_row(solver_form, "dms_radius", "Radius r", self.dms_radius)
+
+		self.dms_max_starts = QtWidgets.QSpinBox()
+		self.dms_max_starts.setRange(1, 1000)
+		self.dms_max_starts.setValue(int(getattr(defaults, "dms_max_starts", 10)))
+		self._add_solver_row(solver_form, "dms_max_starts", "DMS Max Starts", self.dms_max_starts)
+
+		self.dms_discard_unclear = QtWidgets.QCheckBox()
+		self.dms_discard_unclear.setChecked(bool(getattr(defaults, "dms_discard_unclear", True)))
+		self._add_solver_row(solver_form, "dms_discard_unclear", "Discard Unclear Configs", self.dms_discard_unclear)
 
 		self.multi_noise = self._new_double_spin(0.0, 100.0, defaults.multi_start_noise, decimals=4, step=0.01)
-		solver_form.addRow("Noise Abs", self.multi_noise)
+		self._add_solver_row(solver_form, "multi_noise", "Noise Abs", self.multi_noise)
 
 		self.multi_noise_rel = self._new_double_spin(0.0, 100.0, defaults.multi_start_noise_rel, decimals=4, step=0.01)
-		solver_form.addRow("Noise Rel", self.multi_noise_rel)
+		self._add_solver_row(solver_form, "multi_noise_rel", "Noise Rel", self.multi_noise_rel)
 
 		self.hexaly_time_limit = QtWidgets.QSpinBox()
 		self.hexaly_time_limit.setRange(1, 36000)
 		self.hexaly_time_limit.setValue(defaults.hexaly_time_limit)
-		solver_form.addRow("Time Limit", self.hexaly_time_limit)
+		self._add_solver_row(solver_form, "hexaly_time_limit", "Time Limit", self.hexaly_time_limit)
 		root.addWidget(solver_group)
 
 		self._mode = defaults.mode
@@ -512,23 +746,36 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 
 	def _update_visibility(self) -> None:
 		mode = str(getattr(self, "_mode", "W_d"))
-		show_method = mode in {"W_d", "C_d"}
+		show_method = mode in {"W_d", "W_d_M", "C_d"}
+		dms_enabled = self.dynamic_multistart.isChecked() if hasattr(self, "dynamic_multistart") else False
 		self._solver_group.setVisible(True)
-		for row in range(self._solver_group.layout().rowCount()):
-			pass
-		self._set_row_visible("match_total_demand", mode in {"W_d", "C_d"})
-		self.method.setVisible(show_method)
-		method_label = self._solver_group.layout().labelForField(self.method)
-		if method_label is not None:
-			method_label.setVisible(show_method)
+		self._set_row_visible("match_total_demand", mode in {"W_d", "W_d_M", "C_d"})
+		self._set_solver_row_visible("method", show_method)
+		self._set_solver_row_visible("multi_starts", not dms_enabled)
+		self._set_solver_row_visible("dms_consistency", dms_enabled)
+		self._set_solver_row_visible("dms_deviation", dms_enabled)
+		self._set_solver_row_visible("dms_radius", dms_enabled)
+		self._set_solver_row_visible("dms_max_starts", dms_enabled)
+		self._set_solver_row_visible("dms_discard_unclear", dms_enabled)
+
+	def _parse_dms_radius(self) -> float:
+		return _float_or_default(self.dms_radius.text(), float("inf"))
 
 	def get_payload(self) -> Dict[str, object]:
 		return {
 			"METHOD": str(self.method.currentData()),
 			"NORM": self.norm_value.value(),
 			"DEMAND_LB": self.demand_lb.value(),
+			"EXTRA_DEMAND": self.extra_demand.value(),
 			"MEASUREMENT_HEADS_EQUAL_ONLY": self.measurement_heads_equal.isChecked(),
+			"MATCH_TOTAL_DEMAND": self.match_total_demand.isChecked(),
 			"MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": self.match_total_demand.isChecked(),
+			"DYNAMIC_MULTISTART": self.dynamic_multistart.isChecked(),
+			"DMS_CONSISTENCY": self.dms_consistency.value(),
+			"DMS_DEVIATION": self.dms_deviation.value(),
+			"DMS_RADIUS": self._parse_dms_radius(),
+			"DMS_MAX_STARTS": self.dms_max_starts.value(),
+			"DMS_DISCARD_UNCLEAR": self.dms_discard_unclear.isChecked(),
 			"MULTI_STARTS": self.multi_starts.value(),
 			"MULTI_START_NOISE": self.multi_noise.value(),
 			"MULTI_START_NOISE_REL": self.multi_noise_rel.value(),
@@ -1339,7 +1586,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		shared_group = QtWidgets.QGroupBox("Shared")
 		shared_form = QtWidgets.QFormLayout(shared_group)
 		self.mode_input = QtWidgets.QComboBox()
+		self.mode_input.addItem("W_d(M)", "W_d_M")
 		self.mode_input.addItem("W_d", "W_d")
+		self.mode_input.addItem("W_h(M)", "W_h_M")
 		self.mode_input.addItem("C_d", "C_d")
 		self.mode_input.addItem("W_h", "W_h")
 		self.mode_input.addItem("C_h - fixed", "C_h_fixed")
@@ -1434,10 +1683,15 @@ class MainWindow(QtWidgets.QMainWindow):
 		outer.addWidget(info)
 
 		form = QtWidgets.QFormLayout()
+		self.ls_use_default_nodes = QtWidgets.QCheckBox("Use default")
+		self.ls_use_default_nodes.setChecked(False)
+		self.ls_use_default_nodes.toggled.connect(self._ls_update_starting_nodes_state)
+		form.addRow("Use Default", self.ls_use_default_nodes)
 		self.ls_nodes_input = QtWidgets.QLineEdit()
 		self.ls_nodes_input.setPlaceholderText("e.g. 3, 7, 12")
 		form.addRow("Starting Nodes", self.ls_nodes_input)
 		outer.addLayout(form)
+		self._ls_update_starting_nodes_state()
 
 		btn_row = QtWidgets.QHBoxLayout()
 		self.ls_run_button = QtWidgets.QPushButton("Run Local Search")
@@ -2761,16 +3015,56 @@ class MainWindow(QtWidgets.QMainWindow):
 				nodes.append(tok)
 		return True, nodes
 
+	def _ls_default_nodes(self) -> List[str]:
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return []
+		json_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.json")
+		if not os.path.isfile(json_path):
+			return []
+		try:
+			with open(json_path, encoding="utf-8") as f:
+				cfg = json.load(f)
+			nodes = [str(n).strip() for n in cfg.get("measurement_nodes", []) if str(n).strip()]
+			return list(dict.fromkeys(nodes))
+		except (OSError, json.JSONDecodeError):
+			return []
+
+	def _ls_update_starting_nodes_state(self) -> None:
+		if not hasattr(self, "ls_nodes_input"):
+			return
+		use_default = bool(getattr(self, "ls_use_default_nodes", None) and self.ls_use_default_nodes.isChecked())
+		if use_default:
+			nodes = self._ls_default_nodes()
+			self.ls_nodes_input.setText(", ".join(nodes))
+			self.ls_nodes_input.setEnabled(False)
+			self.ls_nodes_input.setPlaceholderText("Using default measurement_nodes from wdn/<name>.json")
+		else:
+			self.ls_nodes_input.setEnabled(True)
+			self.ls_nodes_input.setPlaceholderText("e.g. 3, 7, 12")
+
 	def _run_local_search(self) -> None:
 		if self._ls_worker is not None and self._ls_worker.isRunning():
 			return
-		valid, nodes = self._parse_ls_nodes(self.ls_nodes_input.text())
+		if not self._measurement_data_valid:
+			QtWidgets.QMessageBox.warning(
+				self,
+				"Invalid Measurement Data",
+				"Custom measurement data must be a JSON dictionary mapping node ids to numbers, with reserved keys like -1 for total demand.",
+			)
+			self.ls_status_label.setText("Local search not started: invalid measurement data.")
+			return
+		if bool(hasattr(self, "ls_use_default_nodes") and self.ls_use_default_nodes.isChecked()):
+			nodes = self._ls_default_nodes()
+			valid = len(nodes) > 0
+		else:
+			valid, nodes = self._parse_ls_nodes(self.ls_nodes_input.text())
 		if not valid or len(nodes) < 1:
 			QtWidgets.QMessageBox.warning(
 				self,
 				"Invalid Nodes",
-				"Please enter at least one explicit junction node ID, comma-separated.\n"
-				"Shortcuts like #3 are not supported here.",
+				"Please provide at least one valid starting node.\n"
+				"If 'Use default' is enabled, ensure wdn/<name>.json contains measurement_nodes.",
 			)
 			return
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
@@ -2779,7 +3073,11 @@ class MainWindow(QtWidgets.QMainWindow):
 		existing_index = _load_index_with_legacy(index_path, LEGACY_DATA_INDEX)
 		# Build payload template (no MEASUREMENT_SITES — worker sets it per config)
 		payload_template = self._solver_payload_from_widget(self.model_a)
+		payload_template["MODE"] = self._current_mode()
 		payload_template.pop("MEASUREMENT_SITES", None)
+		if bool(payload_template.get("DYNAMIC_MULTISTART", False)):
+			# Local search ignores solver-tab radius and starts with r=+inf.
+			payload_template["DMS_RADIUS"] = float("inf")
 
 		self.ls_log.clear()
 		self.ls_status_label.setText("Running...")
@@ -2819,6 +3117,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
 	def _wdn_changed(self) -> None:
 		self.solver_params.wdn = self.wdn_input.currentText().strip()
+		if hasattr(self, "ls_use_default_nodes"):
+			self._ls_update_starting_nodes_state()
 		if not self._updating_measurement_text:
 			self._measurement_text_changed(self.measurement_list.text())
 		if hasattr(self, "gnn_default_nodes_label"):
@@ -2869,6 +3169,18 @@ class MainWindow(QtWidgets.QMainWindow):
 		return str(self.mode_input.currentData() or self.mode_input.currentText())
 
 	def _measurement_source_options_for_mode(self, mode: str) -> List[tuple[str, str]]:
+		if mode == "W_d_M":
+			return [
+				("custom input", "custom"),
+				("from W_d", "from_w_d"),
+				("base", "base"),
+			]
+		if mode == "W_h_M":
+			return [
+				("custom input", "custom"),
+				("from W_h", "from_w_h"),
+				("base", "base"),
+			]
 		if mode == "C_h_fixed":
 			return [
 				("from W_h", "from_w_h"),
@@ -2895,6 +3207,10 @@ class MainWindow(QtWidgets.QMainWindow):
 		]
 
 	def _default_measurement_source_for_mode(self, mode: str) -> str:
+		if mode == "W_d_M":
+			return "custom"
+		if mode == "W_h_M":
+			return "custom"
 		if mode in {"C_h", "C_h_fixed"}:
 			return "from_w_h"
 		if mode == "C_d":
@@ -2929,7 +3245,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._measurement_data_text_changed()
 
 	def _update_measurement_source_visibility(self) -> None:
-		show_measurement = self._current_mode() in {"C_d", "C_h", "C_h_fixed"}
+		show_measurement = self._current_mode() in {"W_d_M", "W_h_M", "C_d", "C_h", "C_h_fixed"}
 		measurement_label = self.measurement_source.parentWidget().layout().labelForField(self.measurement_source)
 		if measurement_label is not None:
 			measurement_label.setVisible(show_measurement)
@@ -2948,7 +3264,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 	def _parse_measurement_data_input(self, text: str) -> tuple[bool, Dict[str, float] | None]:
 		payload = text.strip()
-		if self._current_mode() not in {"C_d", "C_h", "C_h_fixed"} or self._measurement_source_value() != "custom":
+		if self._current_mode() not in {"W_d", "W_h", "W_d_M", "W_h_M", "C_d", "C_h", "C_h_fixed"} or self._measurement_source_value() != "custom":
 			return True, None
 		if not payload:
 			return False, None
@@ -2988,7 +3304,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		if m_range:
 			a = int(m_range.group(1))
 			b = int(m_range.group(2))
-			if a >= b:
+			if a > b:
 				return False, None, []
 			if a > n_nodes or b > n_nodes:
 				return False, None, []
@@ -3042,6 +3358,7 @@ class MainWindow(QtWidgets.QMainWindow):
 	def _solver_payload_from_widget(self, model_widget: "SolverModelWidget") -> Dict[str, object]:
 		payload = asdict(self.solver_params)
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
+		mode = self._current_mode()
 		measurement_data = None
 		if self._measurement_source_value() == "custom":
 			_valid, parsed = self._parse_measurement_data_input(self.measurement_data_input.toPlainText())
@@ -3049,13 +3366,23 @@ class MainWindow(QtWidgets.QMainWindow):
 		payload.update(
 			{
 				"WDN": wdn,
-				"MODE": self._current_mode(),
+				"MODE": mode,
 				"MEASUREMENT_SITES": self._measurement_value,
 				"MEASUREMENT_SOURCE": self._measurement_source_value(),
 				"MEASUREMENT_DATA": measurement_data,
 			}
 		)
 		payload.update(model_widget.get_payload())
+		# Posteriori modes are measurement-fitting modes; force absolute measurement matching.
+		if mode in {"W_d_M", "W_h_M"}:
+			payload["MEASUREMENT_HEADS_EQUAL_ONLY"] = False
+		# A-priori W-modes must not depend on a fixed measurement instance.
+		if mode in {"W_d", "W_h"}:
+			payload["MEASUREMENT_SOURCE"] = "base"
+			payload["MEASUREMENT_DATA"] = None
+		# xd backend currently supports equality-only measurement mode, so route W_d(M) to classical.
+		if mode == "W_d_M" and str(payload.get("METHOD", "")).lower() == "xd":
+			payload["METHOD"] = "classical"
 		return payload
 
 	def _expand_measurement_sets(self) -> List[List[str]]:
@@ -3126,29 +3453,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
 		wdn = self.wdn_input.currentText().strip() or self.solver_params.wdn
 		_sync_wdn_index(wdn)
-		measurement_sets = self._expand_measurement_sets()
-		if not measurement_sets:
+		if (
+			isinstance(self._measurement_value, str)
+			and self._measurement_value.startswith("#")
+			and self._measurement_source_value() == "custom"
+		):
 			QtWidgets.QMessageBox.warning(
 				self,
-				"Invalid Sites",
-				"No valid site sets could be expanded from the site input.",
+				"Custom Measurement Not Supported for #k",
+				"Custom measurement data defines one fixed measurement instance.\n"
+				"Combinatorial site specs like #k or #a-#b represent many different site sets.\n"
+				"Please select explicit sites (e.g. 1,5,8) when using custom measurement data.",
 			)
-			self.status_bar.showMessage("Solver not started: no valid site sets.")
+			self.status_bar.showMessage("Solver not started: custom measurement with combinatorial site spec.")
 			return
 
 		base_a = self._solver_payload_from_widget(self.model_a)
 		self._pending_runs = []
 		self._completed_runs = []
-		for nodes in measurement_sets:
-			payload_a = dict(base_a)
-			payload_a["MEASUREMENT_SITES"] = nodes
-			self._pending_runs.append(("A", payload_a))
+		self._pending_runs.append(("A", dict(base_a)))
 		if self.comparison_mode_check.isChecked():
 			base_b = self._solver_payload_from_widget(self.model_b)
-			for nodes in measurement_sets:
-				payload_b = dict(base_b)
-				payload_b["MEASUREMENT_SITES"] = nodes
-				self._pending_runs.append(("B", payload_b))
+			self._pending_runs.append(("B", dict(base_b)))
 
 		self.solve_button.setEnabled(False)
 		self.progress_bar.setRange(0, 1)
@@ -3169,19 +3495,35 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.progress_label.setText(f"Run {run_num}/{total_runs} ({label})  0 / ?")
 
 		wdn = str(payload.get("WDN", "wdn"))
-		solver_hash = compute_hash(payload)
+		solver_hash = compute_hash(_solver_cache_hash_payload(payload))
 		index_path = _data_index_path(wdn)
 		index = _load_index_with_legacy(index_path, LEGACY_DATA_INDEX)
 		cached_dir = index.get(solver_hash)
 		resolved_cached = (cached_dir if os.path.isabs(cached_dir) else os.path.join(ROOT_DIR, cached_dir)) if cached_dir else None
 		if resolved_cached and os.path.isdir(resolved_cached):
-			self.status_bar.showMessage(f"Run {label} cached: {resolved_cached}")
-			self._completed_runs.append((label, 0, "", "", resolved_cached))
-			self._pending_runs.pop(0)
-			self._start_next_solver_run()
-			return
+			use_cached = True
+			if bool(payload.get("DYNAMIC_MULTISTART", False)):
+				dd_path = os.path.join(resolved_cached, "demand_distance.json")
+				if os.path.isfile(dd_path):
+					try:
+						dd = _read_json(dd_path)
+					except Exception:
+						dd = {}
+					radius_ref = _float_or_default(payload.get("DMS_RADIUS"), float("inf"))
+					conclusive, lower, upper, cert = _dms_cache_conclusive(dd, radius_ref)
+					if not conclusive:
+						use_cached = False
+						self.status_bar.showMessage(
+							f"Run {label}: cached DMS inconclusive for r={radius_ref:.6f} in [{lower:.6f}, {upper:.6f}] ({cert or 'n/a'}), recomputing..."
+						)
+			if use_cached:
+				self.status_bar.showMessage(f"Run {label} cached: {resolved_cached}")
+				self._completed_runs.append((label, 0, "", "", resolved_cached))
+				self._pending_runs.pop(0)
+				self._start_next_solver_run()
+				return
 
-		output_dir = os.path.join("data", wdn, solver_hash[:8])
+		output_dir = os.path.join("data", wdn, solver_hash)
 		payload = dict(payload)
 		payload["OUTPUT_DIR"] = output_dir
 		payload["SOLVER_HASH"] = solver_hash

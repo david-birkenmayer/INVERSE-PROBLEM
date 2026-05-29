@@ -1,0 +1,13 @@
+{
+  "artifact_type": "test_set",
+  "created_at": "2026-05-29T09:41:31.608128+00:00",
+  "hash": "105b678f73d06e601a330802996a58369ed900b35427cffe0b34ec681d12fb59",
+  "inputs": {
+    "code_version": "data_generator_v1",
+    "demand_model": "dirichlet",
+    "extra_demand": 1.2,
+    "num_simulations": 100,
+    "seed": 9999,
+    "wdn": "Kadu"
+  }
+}

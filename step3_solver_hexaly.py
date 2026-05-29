@@ -142,8 +142,10 @@ def solve_max_demand_distance_hexaly(
     demand_lb: float = 0.0,
     demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
+    total_demand_upper: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = False,
+    match_reservoir_outflow_between_pairs: bool = False,
     reference_demands: Optional[Dict[str, float]] = None,
     restriction_mode: Optional[str] = None,
     radius_to_fixed: Optional[float] = None,
@@ -285,6 +287,9 @@ def solve_max_demand_distance_hexaly(
         if total_demand is not None:
             m.constraint(_sum_expr(m, list(dA.values())) == float(total_demand))
             m.constraint(_sum_expr(m, list(dB.values())) == float(total_demand))
+        elif total_demand_upper is not None:
+            m.constraint(_sum_expr(m, list(dA.values())) <= float(total_demand_upper))
+            m.constraint(_sum_expr(m, list(dB.values())) <= float(total_demand_upper))
 
         if reservoir_node is not None and reservoir_outflow is not None:
             net_a = []
@@ -299,6 +304,21 @@ def solve_max_demand_distance_hexaly(
                     net_b.append(-qB[p])
             m.constraint(_sum_expr(m, net_a) == float(reservoir_outflow))
             m.constraint(_sum_expr(m, net_b) == float(reservoir_outflow))
+
+        # Optional information toggle: enforce equal reservoir outflow between paired demands
+        # without pinning it to the scenario value.
+        if reservoir_node is not None and match_reservoir_outflow_between_pairs:
+            net_a_eq = []
+            net_b_eq = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                if pipe.start_node == reservoir_node:
+                    net_a_eq.append(qA[p])
+                    net_b_eq.append(qB[p])
+                if pipe.end_node == reservoir_node:
+                    net_a_eq.append(-qA[p])
+                    net_b_eq.append(-qB[p])
+            m.constraint(_sum_expr(m, net_a_eq) == _sum_expr(m, net_b_eq))
 
         if initial_guess is not None:
             ref_pipe = None
@@ -403,6 +423,12 @@ def solve_max_demand_distance_hexaly(
 
     if total_demand is not None:
         max_violation = max(max_violation, abs(sum(d_a.values()) - total_demand), abs(sum(d_b.values()) - total_demand))
+    elif total_demand_upper is not None:
+        max_violation = max(
+            max_violation,
+            max(0.0, sum(d_a.values()) - float(total_demand_upper)),
+            max(0.0, sum(d_b.values()) - float(total_demand_upper)),
+        )
 
     min_demand_viol = 0.0
     if d_a or d_b:

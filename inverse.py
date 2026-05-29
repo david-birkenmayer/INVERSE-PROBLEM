@@ -22,7 +22,7 @@ from step3_solver_xd_hexaly import solve_max_demand_distance_xd_hexaly
 
 WDN = "Alperovits"
 MEASUREMENT_SITES: object = 2
-MODE = "W_d"  # W_d, C_d, W_h, C_h_fixed
+MODE = "W_d"  # W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed
 METHOD = "xd"  # xd, classical (used for W_d/C_d)
 NORM = 2.0
 DEMAND_LB = 1e-6
@@ -30,6 +30,12 @@ MULTI_STARTS = 1
 MULTI_START_NOISE = 0.05
 MULTI_START_NOISE_REL = 0.25
 MULTI_START_SEED = None
+DYNAMIC_MULTISTART = False
+DMS_CONSISTENCY = 3
+DMS_DEVIATION = 0.95
+DMS_RADIUS = float("inf")
+DMS_MAX_STARTS = 10
+DMS_DISCARD_UNCLEAR = True
 MEASUREMENT_HEADS_EQUAL_ONLY = True
 HEXALY_LICENSE_PATH = os.path.expanduser("~/opt/Hexaly_14_5/license.dat")
 HEXALY_TIME_LIMIT = 30
@@ -37,6 +43,7 @@ HEXALY_SEED = 0
 HEXALY_VERBOSITY = 2
 HEADLOSS_MODEL = "hw"  # auto, hw, dw
 OUTPUT_DIR = None
+MATCH_TOTAL_DEMAND = True
 MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS = False
 MEASUREMENT_SOURCE = "from_w_d"
 MEASUREMENT_DATA = None
@@ -77,6 +84,12 @@ def _apply_config(config: Dict[str, object]) -> None:
         "MULTI_START_NOISE",
         "MULTI_START_NOISE_REL",
         "MULTI_START_SEED",
+        "DYNAMIC_MULTISTART",
+        "DMS_CONSISTENCY",
+        "DMS_DEVIATION",
+        "DMS_RADIUS",
+        "DMS_MAX_STARTS",
+        "DMS_DISCARD_UNCLEAR",
         "MEASUREMENT_HEADS_EQUAL_ONLY",
         "HEXALY_LICENSE_PATH",
         "HEXALY_TIME_LIMIT",
@@ -85,6 +98,7 @@ def _apply_config(config: Dict[str, object]) -> None:
         "HEADLOSS_MODEL",
         "OUTPUT_DIR",
         "SOLVER_HASH",
+        "MATCH_TOTAL_DEMAND",
         "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS",
         "MEASUREMENT_SOURCE",
         "MEASUREMENT_DATA",
@@ -150,7 +164,7 @@ def _sanitize_hash_payload(payload: Dict[str, object]) -> Dict[str, object]:
     return {
         str(k): v
         for k, v in payload.items()
-        if k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path"}
+        if k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS"}
     }
 
 
@@ -374,8 +388,31 @@ def _select_measurement_sets(network) -> List[List[str]]:
         text = MEASUREMENT_SITES.strip()
         if not text or text == "#0":
             return [[]]
+        m_range = None
         if text.startswith("#"):
-            p = int(text[1:])
+            m_range = text.split("-#", 1) if "-#" in text else None
+        if m_range and len(m_range) == 2 and m_range[0].startswith("#"):
+            try:
+                a = int(m_range[0][1:])
+                b = int(m_range[1])
+            except ValueError:
+                return []
+            candidates = sorted(network.junctions.keys())
+            if a < 0 or b < 0 or a > b or a > len(candidates):
+                return []
+            b = min(b, len(candidates))
+            sets: List[List[str]] = []
+            for p in range(a, b + 1):
+                if p == 0:
+                    sets.append([])
+                else:
+                    sets.extend([list(x) for x in combinations(candidates, p)])
+            return sets
+        if text.startswith("#"):
+            try:
+                p = int(text[1:])
+            except ValueError:
+                return []
             candidates = sorted(network.junctions.keys())
             if p < 0 or p > len(candidates):
                 return []
@@ -468,6 +505,12 @@ def _build_parameters_snapshot(
         "MULTI_START_NOISE": MULTI_START_NOISE,
         "MULTI_START_NOISE_REL": MULTI_START_NOISE_REL,
         "MULTI_START_SEED": MULTI_START_SEED,
+        "DYNAMIC_MULTISTART": DYNAMIC_MULTISTART,
+        "DMS_CONSISTENCY": DMS_CONSISTENCY,
+        "DMS_DEVIATION": DMS_DEVIATION,
+        "DMS_RADIUS": DMS_RADIUS,
+        "DMS_MAX_STARTS": DMS_MAX_STARTS,
+        "DMS_DISCARD_UNCLEAR": DMS_DISCARD_UNCLEAR,
         "MEASUREMENT_HEADS_EQUAL_ONLY": MEASUREMENT_HEADS_EQUAL_ONLY,
         "HEADLOSS_MODEL": HEADLOSS_MODEL,
         "HEADLOSS_MODEL_LOCAL": headloss_model_local,
@@ -490,12 +533,20 @@ def main() -> None:
     if args.config:
         _apply_config(_read_json(args.config))
 
-    mode = str(MODE)
+    mode_raw = str(MODE)
+    mode = mode_raw
+    is_posteriori_mode = False
     method = str(METHOD).lower()
-    if mode in {"H_h", "C_h"}:
+    if mode in {"W_d(M)", "W_d_M"}:
+        mode = "W_d"
+        is_posteriori_mode = True
+    elif mode in {"W_h(M)", "W_h_M"}:
+        mode = "W_h"
+        is_posteriori_mode = True
+    elif mode in {"H_h", "C_h"}:
         mode = "C_h_fixed"
     if mode not in {"W_d", "C_d", "W_h", "C_h_fixed"}:
-        raise ValueError("MODE must be one of: W_d, C_d, W_h, C_h_fixed.")
+        raise ValueError("MODE must be one of: W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed.")
     if method not in {"xd", "classical"}:
         raise ValueError("METHOD must be 'xd' or 'classical'.")
 
@@ -561,20 +612,37 @@ def main() -> None:
             _build_parameters_snapshot(measurement_nodes, len(sensor_sets), headloss_model_local, None),
         )
 
-        measurement_data = _resolve_measurement_data(
-            WDN,
-            mode,
-            list(measurement_nodes),
-            base_heads,
-            total_demand,
-            reservoir_node,
-            reservoir_head,
-        )
+        if not is_posteriori_mode and mode in {"W_d", "W_h"}:
+            # A-priori W-modes must not condition on a fixed measurement instance.
+            measurement_data = _build_measurement_dict(
+                measurement_nodes,
+                base_heads,
+                total_demand,
+                reservoir_node,
+                reservoir_head,
+            )
+        else:
+            measurement_data = _resolve_measurement_data(
+                WDN,
+                mode,
+                list(measurement_nodes),
+                base_heads,
+                total_demand,
+                reservoir_node,
+                reservoir_head,
+            )
         sensor_heads = _measurement_heads_for_sites(measurement_data, measurement_nodes)
         reservoir_head_local = _measurement_reservoir_head(measurement_data, reservoir_node, reservoir_head)
         total_demand_local = _measurement_total_demand(measurement_data, total_demand)
         if reservoir_node and reservoir_head_local is not None:
             sensor_heads[reservoir_node] = float(reservoir_head_local)
+
+        measurement_heads_equal_only_local = bool(MEASUREMENT_HEADS_EQUAL_ONLY)
+        if is_posteriori_mode and mode in {"W_d", "W_h"}:
+            measurement_heads_equal_only_local = False
+        elif mode in {"W_d", "W_h"}:
+            # A-priori W-modes must stay in equivalence-class form, not absolute head fitting.
+            measurement_heads_equal_only_local = True
 
         _write_json(
             os.path.join(output_dir, "parameters.json"),
@@ -589,6 +657,8 @@ def main() -> None:
             base_heads,
             base_flows,
         )
+        if not is_posteriori_mode and mode in {"W_d", "W_h"}:
+            center_state = None
         reference_demands_local = (
             center_state.get("demands", reference_demands) if center_state is not None else reference_demands
         )
@@ -607,10 +677,36 @@ def main() -> None:
         # equality constraint when the measured value genuinely exceeds the base
         # total (i.e. the measurement captured extra demand above the base).
         base_total = float(sum(reference_demands_local.values()))
-        solver_total_demand: "float | None" = (
-            total_demand_local if total_demand_local is not None and total_demand_local > base_total + 1e-6
-            else None
-        )
+        solver_total_demand: "float | None" = None
+        solver_total_demand_upper: "float | None" = None
+        match_total_between_pairs_local = bool(MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS)
+        extra_budget = None
+        try:
+            extra_budget = float(_RAW_CONFIG.get("EXTRA_DEMAND")) if isinstance(_RAW_CONFIG, dict) and _RAW_CONFIG.get("EXTRA_DEMAND") is not None else None
+        except (TypeError, ValueError):
+            extra_budget = None
+
+        # Posteriori modes represent a fixed measurement instance; honor explicit measured total demand.
+        if is_posteriori_mode and TOTAL_DEMAND_KEY in measurement_data:
+            solver_total_demand = float(total_demand_local) if total_demand_local is not None else None
+        # A-priori W-modes should not condition on a concrete measurement M.
+        # Use only the known extra-demand budget around base demand.
+        elif mode in {"W_d", "W_h"}:
+            if extra_budget is not None and extra_budget >= 0.0:
+                solver_total_demand_upper = base_total + extra_budget
+            else:
+                solver_total_demand_upper = None
+            # Measure-equivalence classes require paired scenarios to have equal total demand.
+            match_total_between_pairs_local = True
+        else:
+            enforce_total_demand = bool(MATCH_TOTAL_DEMAND)
+            if enforce_total_demand:
+                solver_total_demand = float(total_demand_local) if total_demand_local is not None else None
+            else:
+                solver_total_demand = (
+                    total_demand_local if total_demand_local is not None and total_demand_local > base_total + 1e-6
+                    else None
+                )
 
         base_guess = SolverResult(
             status="base",
@@ -624,12 +720,34 @@ def main() -> None:
         best_result = None
         best_center_result = None
         runs = []
+        dms_enabled = bool(DYNAMIC_MULTISTART)
+        dms_consistency = max(1, int(DMS_CONSISTENCY))
+        dms_max_starts_cfg = max(1, int(DMS_MAX_STARTS))
+        dms_deviation = float(DMS_DEVIATION)
+        if dms_deviation < 0.0:
+            dms_deviation = 0.0
+        if dms_deviation > 1.0:
+            dms_deviation = 1.0
+        try:
+            dms_reference_radius = float(DMS_RADIUS)
+        except (TypeError, ValueError):
+            dms_reference_radius = float("inf")
+        dms_lower_bound = -float("inf")
+        dms_upper_bound = float("inf")
+        dms_certificate = "none"
+        dms_finished = False
+        valid_mode_values: List[float] = []
+        run_idx = 0
+        dms_max_starts = max(max(1, int(MULTI_STARTS)), dms_consistency)
+        if dms_enabled:
+            dms_max_starts = max(dms_max_starts, dms_max_starts_cfg)
 
-        for run_idx in range(max(1, int(MULTI_STARTS))):
+        while True:
             q0 = {k: float(v) for k, v in base_guess.flows.items()}
             h0 = {k: float(v) for k, v in base_guess.heads.items()}
 
-            if int(MULTI_STARTS) > 1:
+            multi_run_target = dms_max_starts if dms_enabled else max(1, int(MULTI_STARTS))
+            if multi_run_target > 1:
                 for k in q0:
                     scale = max(1.0, abs(q0[k]))
                     q0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
@@ -642,6 +760,8 @@ def main() -> None:
 
             solve_with_xd = method == "xd" and mode in {"W_d", "C_d"}
             if mode in {"W_h", "C_h", "C_h_fixed"}:
+                solve_with_xd = False
+            if not measurement_heads_equal_only_local:
                 solve_with_xd = False
 
             if solve_with_xd:
@@ -660,9 +780,10 @@ def main() -> None:
                     demand_lb=float(DEMAND_LB),
                     demand_lb_per_node=demand_lb_per_node,
                     total_demand=solver_total_demand,
+                    total_demand_upper=solver_total_demand_upper,
                     measurement_nodes=measurement_nodes,
-                    measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
-                    match_reservoir_outflow_between_pairs=bool(MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS),
+                    measurement_heads_equal_only=measurement_heads_equal_only_local,
+                    match_reservoir_outflow_between_pairs=match_total_between_pairs_local,
                     headloss_n=headloss_n,
                     cycle_basis_mode="planar",
                     fixed_demands_b=fixed_b,
@@ -689,8 +810,10 @@ def main() -> None:
                     demand_lb=float(DEMAND_LB),
                     demand_lb_per_node=demand_lb_per_node,
                     total_demand=solver_total_demand,
+                    total_demand_upper=solver_total_demand_upper,
                     measurement_nodes=measurement_nodes,
-                    measurement_heads_equal_only=bool(MEASUREMENT_HEADS_EQUAL_ONLY),
+                    measurement_heads_equal_only=measurement_heads_equal_only_local,
+                    match_reservoir_outflow_between_pairs=match_total_between_pairs_local,
                     reference_demands=reference_demands_local,
                     restriction_mode=None,
                     radius_to_fixed=None,
@@ -744,6 +867,9 @@ def main() -> None:
                     "center_success": bool(center_result.success) if center_result is not None else None,
                 }
             )
+            run_valid = bool(result.success) and float(result.max_violation) <= 1e-5 and float(result.min_demand_viol) >= -1e-5
+            if run_valid:
+                valid_mode_values.append(float(mode_value))
             if (
                 best_result is None
                 or (not minimize_mode and mode_value > best_value)
@@ -752,6 +878,38 @@ def main() -> None:
                 best_value = mode_value
                 best_result = result
                 best_center_result = center_result
+
+            if dms_enabled and run_valid:
+                # For minimization in local search: if one run is already >= current best radius,
+                # this configuration is certified as no-improvement.
+                if float(mode_value) >= dms_reference_radius:
+                    dms_lower_bound = float(mode_value)
+                    dms_upper_bound = -float("inf")
+                    dms_certificate = "no-improvement"
+                    dms_finished = True
+                else:
+                    sorted_vals = sorted(valid_mode_values, reverse=True)
+                    if len(sorted_vals) >= dms_consistency and sorted_vals[dms_consistency - 1] >= dms_deviation * sorted_vals[0]:
+                        dms_lower_bound = float(sorted_vals[0])
+                        dms_upper_bound = float(sorted_vals[0])
+                        dms_certificate = "improvement"
+                        dms_finished = True
+
+            run_idx += 1
+            if dms_enabled:
+                if dms_finished:
+                    break
+                if run_idx >= dms_max_starts:
+                    if valid_mode_values:
+                        dms_lower_bound = float(max(valid_mode_values))
+                    else:
+                        dms_lower_bound = -float("inf")
+                    dms_upper_bound = float("inf")
+                    dms_certificate = "inconclusive"
+                    break
+            else:
+                if run_idx >= max(1, int(MULTI_STARTS)):
+                    break
 
         if best_result is None:
             raise RuntimeError("No solver result produced.")
@@ -841,7 +999,8 @@ def main() -> None:
                 "flows_a": out_flows_a,
                 "flows_b": out_flows_b,
                 "radius": best_value,
-                "mode": mode,
+                "mode": mode_raw,
+                "mode_effective": mode,
                 "method": method,
                 "W_d": demand_w,
                 "C_d": demand_c,
@@ -855,8 +1014,19 @@ def main() -> None:
                 "objective": best_result.objective,
                 "solver_status": best_result.solver_status,
                 "best_bound": best_result.best_bound,
+                "runs": runs,
+                "dms_enabled": bool(dms_enabled),
+                "dms_consistency": int(dms_consistency),
+                "dms_deviation": float(dms_deviation),
+                "dms_max_starts": int(dms_max_starts),
+                "dms_discard_unclear": bool(DMS_DISCARD_UNCLEAR),
+                "dms_reference_radius": float(dms_reference_radius),
+                "dms_certificate": dms_certificate,
+                "dms_lower_bound": float(dms_lower_bound),
+                "dms_upper_bound": float(dms_upper_bound),
                 "measurement_source": MEASUREMENT_SOURCE,
                 "measurement_data": measurement_data,
+                "reference_demands": reference_demands_local,
                 "center_side": center_side,
                 "center_symbol": center_symbol,
             },

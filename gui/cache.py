@@ -4,8 +4,31 @@ import os
 from typing import Dict
 
 
+HASH_SCHEMA_VERSION = 3
+
+
+def _canonicalize_for_hash(obj):
+	if isinstance(obj, dict):
+		out = {}
+		for k, v in obj.items():
+			if k == "MEASUREMENT_SITES" and isinstance(v, list):
+				# Site order should not change solver identity.
+				out[k] = sorted(str(x) for x in v)
+			else:
+				out[k] = _canonicalize_for_hash(v)
+		return out
+	if isinstance(obj, list):
+		return [_canonicalize_for_hash(x) for x in obj]
+	return obj
+
+
 def compute_hash(payload: Dict[str, object]) -> str:
-	encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+	canonical = _canonicalize_for_hash(payload)
+	wrapped = {
+		"_hash_schema_version": HASH_SCHEMA_VERSION,
+		"payload": canonical,
+	}
+	encoded = json.dumps(wrapped, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 	return hashlib.sha256(encoded).hexdigest()
 
 
