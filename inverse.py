@@ -738,6 +738,7 @@ def main() -> None:
         dms_finished = False
         valid_mode_values: List[float] = []
         run_idx = 0
+        dms_seed_base = int(MULTI_START_SEED) if MULTI_START_SEED is not None else int(HEXALY_SEED)
         dms_max_starts = max(max(1, int(MULTI_STARTS)), dms_consistency)
         if dms_enabled:
             dms_max_starts = max(dms_max_starts, dms_max_starts_cfg)
@@ -748,12 +749,51 @@ def main() -> None:
 
             multi_run_target = dms_max_starts if dms_enabled else max(1, int(MULTI_STARTS))
             if multi_run_target > 1:
-                for k in q0:
-                    scale = max(1.0, abs(q0[k]))
-                    q0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
-                for k in h0:
-                    scale = max(1.0, abs(h0[k]))
-                    h0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
+                if dms_enabled:
+                    run_rng = np.random.default_rng(dms_seed_base + 1009 * (run_idx + 1))
+                    profile = run_idx % 4
+                    profile_scale = 1.0 + 0.35 * float(run_idx // 4)
+                    flow_abs = float(MULTI_START_NOISE) * profile_scale
+                    flow_rel = float(MULTI_START_NOISE_REL) * profile_scale
+                    head_abs = float(MULTI_START_NOISE) * profile_scale
+                    head_rel = float(MULTI_START_NOISE_REL) * profile_scale
+
+                    if profile == 0:
+                        perturb_q = True
+                        perturb_h = True
+                    elif profile == 1:
+                        perturb_q = True
+                        perturb_h = False
+                        flow_abs *= 2.0
+                        flow_rel *= 2.0
+                    elif profile == 2:
+                        perturb_q = False
+                        perturb_h = True
+                        head_abs *= 2.0
+                        head_rel *= 2.0
+                    else:
+                        perturb_q = True
+                        perturb_h = True
+                        flow_abs *= 1.5
+                        flow_rel *= 1.5
+                        head_abs *= 1.5
+                        head_rel *= 1.5
+
+                    if perturb_q:
+                        for k in q0:
+                            scale = max(1.0, abs(q0[k]))
+                            q0[k] += (flow_abs + flow_rel * scale) * run_rng.standard_normal()
+                    if perturb_h:
+                        for k in h0:
+                            scale = max(1.0, abs(h0[k]))
+                            h0[k] += (head_abs + head_rel * scale) * run_rng.standard_normal()
+                else:
+                    for k in q0:
+                        scale = max(1.0, abs(q0[k]))
+                        q0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
+                    for k in h0:
+                        scale = max(1.0, abs(h0[k]))
+                        h0[k] += (float(MULTI_START_NOISE) + float(MULTI_START_NOISE_REL) * scale) * rng.standard_normal()
 
             run_guess = SolverResult(status="ms", demands=base_guess.demands, heads=h0, flows=q0)
             hexaly_seed = int(HEXALY_SEED) + run_idx

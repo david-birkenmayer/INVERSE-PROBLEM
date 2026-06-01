@@ -1,0 +1,48 @@
+{
+  "DEMAND_LB": 1e-06,
+  "DEMAND_MODEL": null,
+  "DMS_CONSISTENCY": 3,
+  "DMS_DEVIATION": 0.95,
+  "DMS_DISCARD_UNCLEAR": true,
+  "DMS_MAX_STARTS": 10,
+  "DMS_RADIUS": Infinity,
+  "DYNAMIC_MULTISTART": true,
+  "EXTRA_DEMAND": 5.5,
+  "HEADLOSS_MODEL": "hw",
+  "HEADLOSS_MODEL_LOCAL": "hw",
+  "HEXALY_LICENSE_PATH": "/home/birkenma/opt/Hexaly_14_5/license.dat",
+  "HEXALY_SEED": 0,
+  "HEXALY_TIME_LIMIT": 30,
+  "HEXALY_VERBOSITY": 2,
+  "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": true,
+  "MEASUREMENT_DATA": {
+    "-1": 0.55389004945755,
+    "12": 99.13339233398438,
+    "2": 99.95979309082031,
+    "25": 99.11161804199219,
+    "33": 100.0
+  },
+  "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+  "MEASUREMENT_NODES": [
+    "12",
+    "2",
+    "25"
+  ],
+  "MEASUREMENT_SET_COUNT": 1,
+  "MEASUREMENT_SITES": [
+    "12",
+    "2",
+    "25"
+  ],
+  "MEASUREMENT_SOURCE": "base",
+  "METHOD": "xd",
+  "MODE": "W_d",
+  "MULTI_STARTS": 1,
+  "MULTI_START_NOISE": 0.05,
+  "MULTI_START_NOISE_REL": 0.25,
+  "MULTI_START_SEED": null,
+  "NORM": 2.0,
+  "OUTPUT_DIR": "data/Hanoi/2b9c73141e20697649c8fe161c1b985ddb23fac1ec75aa44e7c09193494f2c55",
+  "WDN": "Hanoi",
+  "WDN_NAME": "Hanoi"
+}

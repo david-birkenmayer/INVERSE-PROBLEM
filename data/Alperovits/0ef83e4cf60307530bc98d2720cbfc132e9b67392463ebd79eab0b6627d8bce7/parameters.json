@@ -1,0 +1,42 @@
+{
+  "DEMAND_LB": 1e-06,
+  "DEMAND_MODEL": null,
+  "DMS_CONSISTENCY": 3,
+  "DMS_DEVIATION": 0.95,
+  "DMS_DISCARD_UNCLEAR": true,
+  "DMS_MAX_STARTS": 10,
+  "DMS_RADIUS": Infinity,
+  "DYNAMIC_MULTISTART": false,
+  "EXTRA_DEMAND": 1.2,
+  "HEADLOSS_MODEL": "hw",
+  "HEADLOSS_MODEL_LOCAL": "hw",
+  "HEXALY_LICENSE_PATH": "/home/birkenma/opt/Hexaly_14_5/license.dat",
+  "HEXALY_SEED": 0,
+  "HEXALY_TIME_LIMIT": 30,
+  "HEXALY_VERBOSITY": 2,
+  "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": true,
+  "MEASUREMENT_DATA": {
+    "-1": 1.1200000047683716,
+    "5": 207.9085693359375,
+    "7": 210.0
+  },
+  "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+  "MEASUREMENT_NODES": [
+    "5"
+  ],
+  "MEASUREMENT_SET_COUNT": 1,
+  "MEASUREMENT_SITES": [
+    "5"
+  ],
+  "MEASUREMENT_SOURCE": "base",
+  "METHOD": "xd",
+  "MODE": "W_d",
+  "MULTI_STARTS": 1,
+  "MULTI_START_NOISE": 0.05,
+  "MULTI_START_NOISE_REL": 0.25,
+  "MULTI_START_SEED": null,
+  "NORM": 2.0,
+  "OUTPUT_DIR": "data/Alperovits/0ef83e4cf60307530bc98d2720cbfc132e9b67392463ebd79eab0b6627d8bce7",
+  "WDN": "Alperovits",
+  "WDN_NAME": "Alperovits"
+}

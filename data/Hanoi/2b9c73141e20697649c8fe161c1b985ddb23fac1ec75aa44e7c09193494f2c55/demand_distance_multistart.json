@@ -1,0 +1,87 @@
+{
+  "best_mode_value": 7.588225137933428,
+  "method": "xd",
+  "mode": "W_d",
+  "runs": [
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 0,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 4.668911590677283e-09,
+      "mode_value": 6.74440589209651,
+      "run": 1,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 2,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 3,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 4,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 3.9860738043628885e-09,
+      "mode_value": 7.588225137933428,
+      "run": 5,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 6,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 3.986073776607313e-09,
+      "mode_value": 7.588225137932292,
+      "run": 7,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 5.476847114715966e-09,
+      "mode_value": 6.386676473811521,
+      "run": 8,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 3.986073776607313e-09,
+      "mode_value": 7.588225137932639,
+      "run": 9,
+      "success": true
+    }
+  ]
+}

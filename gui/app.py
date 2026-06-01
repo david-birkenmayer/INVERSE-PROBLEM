@@ -333,6 +333,7 @@ class LocalSearchWorker(QtCore.QThread):
 	status_updated = QtCore.pyqtSignal(str)
 	row_added = QtCore.pyqtSignal(dict)
 	finished_signal = QtCore.pyqtSignal(list)
+	highlight_updated = QtCore.pyqtSignal(list, object, object)
 
 	def __init__(
 		self,
@@ -355,6 +356,12 @@ class LocalSearchWorker(QtCore.QThread):
 		self._lookup: Dict[frozenset, float] = {}
 		self._cancelled = False
 		self._last_eval_unclear = False
+		self._last_eval_starts = 0
+		self._last_eval_certificate = ""
+		self._last_eval_radius = float("inf")
+		self._evaluation_count = 0
+		self._improvement_count = 0
+		self._discarded_count = 0
 
 	def cancel(self) -> None:
 		self._cancelled = True
@@ -363,15 +370,16 @@ class LocalSearchWorker(QtCore.QThread):
 		current: frozenset = frozenset(self._start_nodes)
 		dms_enabled = bool(self._payload_template.get("DYNAMIC_MULTISTART", False))
 		discard_unclear = bool(self._payload_template.get("DMS_DISCARD_UNCLEAR", True))
+		final_current: frozenset = current
+		final_radius = float("inf")
 		while not self._cancelled:
 			if current not in self._lookup:
 				radius = self._evaluate(current, float("inf") if dms_enabled else None)
 				if radius is None:
 					if dms_enabled and self._last_eval_unclear:
 						if discard_unclear:
-							self.status_updated.emit(
-								f"Starting configuration {sorted(current)} is inconclusive under DMS cap; stopping."
-							)
+							self.status_updated.emit(f"> results inconclusive after {self._last_eval_starts} starts")
+							self._discarded_count += 1
 						else:
 							self.status_updated.emit(
 								f"Unclear configuration {sorted(current)} encountered; stopping because discard unclear is disabled."
@@ -381,7 +389,9 @@ class LocalSearchWorker(QtCore.QThread):
 					break
 				self._lookup[current] = radius
 			current_radius = self._lookup[current]
-			self.status_updated.emit(f"Current: {sorted(current)} -> radius={current_radius:.6f}")
+			final_current = current
+			final_radius = current_radius
+			self.highlight_updated.emit(sorted(current), None, None)
 
 			candidates = self._generate_neighbors(current)
 			best: "frozenset | None" = None
@@ -390,12 +400,18 @@ class LocalSearchWorker(QtCore.QThread):
 			for candidate in candidates:
 				if self._cancelled:
 					break
+				removed = sorted(current - candidate)
+				added = sorted(candidate - current)
+				swap_out = removed[0] if len(removed) == 1 else None
+				swap_in = added[0] if len(added) == 1 else None
+				self.highlight_updated.emit(sorted(current), swap_out, swap_in)
 				if candidate not in self._lookup:
 					radius = self._evaluate(candidate, current_radius if dms_enabled else None)
 					if radius is None:
 						if dms_enabled and self._last_eval_unclear:
 							if discard_unclear:
-								self.status_updated.emit(f"Discarding inconclusive configuration {sorted(candidate)}.")
+								self.status_updated.emit(f"> results inconclusive after {self._last_eval_starts} starts")
+								self._discarded_count += 1
 								continue
 							self.status_updated.emit(
 								f"Unclear configuration {sorted(candidate)} encountered; stopping because discard unclear is disabled."
@@ -412,15 +428,31 @@ class LocalSearchWorker(QtCore.QThread):
 			if abort_search:
 				break
 
+			self.highlight_updated.emit(sorted(current), None, None)
+
 			if best is None or self._cancelled:
-				if not self._cancelled:
-					self.status_updated.emit("Local optimum reached - search complete.")
 				break
-			self.status_updated.emit(
-				f"Improving: {sorted(current)} -> {sorted(best)}  "
-				f"(radius {current_radius:.6f} -> {best_radius:.6f})"
-			)
+			self._improvement_count += 1
 			current = best
+			final_current = current
+			final_radius = best_radius
+			self.highlight_updated.emit(sorted(current), None, None)
+
+		self.status_updated.emit("Done.")
+		if not self._cancelled:
+			self.status_updated.emit(f"> Local optimum found after {self._evaluation_count} evaluations")
+		else:
+			self.status_updated.emit(f"> Search cancelled after {self._evaluation_count} evaluations")
+		self.status_updated.emit(f"> {self._improvement_count} improvements")
+		self.status_updated.emit(f"> {self._discarded_count} discarded")
+		if final_current in self._lookup:
+			self.status_updated.emit(
+				f"> Optimum is {sorted(final_current)} with radius {self._lookup[final_current]:.6f}"
+			)
+		else:
+			self.status_updated.emit(
+				f"> Optimum is {sorted(final_current)} with radius {final_radius:.6f}"
+			)
 		self.finished_signal.emit(self._rows)
 
 	def _generate_neighbors(self, current: frozenset) -> "List[frozenset]":
@@ -437,7 +469,12 @@ class LocalSearchWorker(QtCore.QThread):
 
 	def _evaluate(self, config: frozenset, dms_reference_radius: float | None = None) -> "float | None":
 		self._last_eval_unclear = False
+		self._last_eval_starts = 0
+		self._last_eval_certificate = ""
+		self._last_eval_radius = float("inf")
+		self._evaluation_count += 1
 		nodes = sorted(config)
+		self.status_updated.emit(f"Evaluating {nodes}...")
 		payload = dict(self._payload_template)
 		payload["MEASUREMENT_SITES"] = nodes
 		expected_dms = bool(payload.get("DYNAMIC_MULTISTART", False))
@@ -462,6 +499,7 @@ class LocalSearchWorker(QtCore.QThread):
 					cached=True,
 				)
 				if radius is not None:
+					self._emit_dms_eval_summary(expected_dms, dms_reference_radius, radius)
 					return radius
 				# Drop stale/invalid cache entries so future runs recompute cleanly.
 				# Keep DMS entries: they can be valid but inconclusive for the current r.
@@ -474,7 +512,6 @@ class LocalSearchWorker(QtCore.QThread):
 		os.makedirs(CACHE_DIR, exist_ok=True)
 		config_path = os.path.join(CACHE_DIR, f"solver-{solver_hash}.json")
 		_write_json(config_path, payload)
-		self.status_updated.emit(f"Evaluating {nodes}...")
 		proc = subprocess.run(
 			[sys.executable, "inverse.py", "--config", config_path],
 			capture_output=True,
@@ -503,10 +540,25 @@ class LocalSearchWorker(QtCore.QThread):
 		)
 		if radius is None:
 			return None
+		self._emit_dms_eval_summary(expected_dms, dms_reference_radius, radius)
 		self._index[solver_hash] = output_dir
 		save_index(self._index_path, self._index, ROOT_DIR)
 		_write_gui_hash(resolvedout, solver_hash)
 		return radius
+
+	def _emit_dms_eval_summary(self, expected_dms: bool, dms_reference_radius: float | None, radius: float) -> None:
+		if not expected_dms:
+			return
+		starts = max(1, int(self._last_eval_starts))
+		cert = self._last_eval_certificate
+		if cert == "improvement":
+			self.status_updated.emit(f"> Improvement found after {starts} starts")
+			if dms_reference_radius is not None and math.isfinite(float(dms_reference_radius)):
+				self.status_updated.emit(f"> Radius: {float(dms_reference_radius):.6f} -> {float(radius):.6f}")
+		elif cert == "no-improvement":
+			self.status_updated.emit(f"> Improvement ruled out after {starts} starts")
+		elif cert == "inconclusive":
+			self.status_updated.emit(f"> results inconclusive after {starts} starts")
 
 	def _read_radius(
 		self,
@@ -577,15 +629,15 @@ class LocalSearchWorker(QtCore.QThread):
 			return None
 		if expected_dms and dms_reference_radius is not None:
 			conclusive, lower, upper, cert = _dms_cache_conclusive(dd, float(dms_reference_radius))
+			runs_raw = dd.get("runs")
+			runs_count = len(runs_raw) if isinstance(runs_raw, list) else 0
+			self._last_eval_starts = runs_count
+			self._last_eval_certificate = cert
 			if not conclusive:
 				self._last_eval_unclear = True
-				self.status_updated.emit(
-					f"Ignoring {'cached ' if cached else ''}DMS result for {nodes}: "
-					f"r={float(dms_reference_radius):.6f} inside [{lower:.6f}, {upper:.6f}] "
-					f"(certificate={cert or 'n/a'})"
-				)
 				return None
 		radius = float(dd.get("radius", float("inf")))
+		self._last_eval_radius = radius
 		row: Dict[str, str] = {
 			"measurement_sites": str(nodes),
 			"radius": f"{radius:.6f}",
@@ -658,6 +710,42 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		lbl.setVisible(visible)
 		w.setVisible(visible)
 
+	def _wdn_extra_demand_default(self) -> float | None:
+		win = self.window()
+		wdn_input = getattr(win, "wdn_input", None)
+		wdn = str(wdn_input.currentText()).strip() if wdn_input is not None else ""
+		if not wdn:
+			return None
+		json_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.json")
+		if not os.path.isfile(json_path):
+			return None
+		try:
+			with open(json_path, encoding="utf-8") as f:
+				cfg = json.load(f)
+			if "extra_demand" not in cfg:
+				return None
+			return float(cfg.get("extra_demand"))
+		except (OSError, TypeError, ValueError, json.JSONDecodeError):
+			return None
+
+	def _update_extra_demand_state(self) -> None:
+		use_default = bool(self.extra_demand_use_default.isChecked()) if hasattr(self, "extra_demand_use_default") else False
+		self.extra_demand.setEnabled(not use_default)
+		if use_default:
+			default_value = self._wdn_extra_demand_default()
+			if default_value is not None:
+				self.extra_demand.blockSignals(True)
+				self.extra_demand.setValue(default_value)
+				self.extra_demand.blockSignals(False)
+
+	def refresh_wdn_dependent_defaults(self) -> None:
+		if hasattr(self, "extra_demand_use_default") and self.extra_demand_use_default.isChecked():
+			default_value = self._wdn_extra_demand_default()
+			if default_value is not None:
+				self.extra_demand.blockSignals(True)
+				self.extra_demand.setValue(default_value)
+				self.extra_demand.blockSignals(False)
+
 	def _build_ui(self, defaults: "SolverParams") -> None:
 		root = QtWidgets.QVBoxLayout(self)
 
@@ -689,7 +777,16 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		self.demand_lb = self._new_double_spin(0.0, 1e6, defaults.demand_lb, decimals=8, step=1e-6)
 		self._add_solver_row(solver_form, "demand_lb", "Demand LB", self.demand_lb)
 
-		self.extra_demand = self._new_double_spin(0.0, 1e6, float(getattr(defaults, "extra_demand", 1.2)), decimals=6, step=0.1)
+		self.extra_demand_use_default = QtWidgets.QCheckBox()
+		self.extra_demand_use_default.setChecked(bool(getattr(defaults, "extra_demand_use_default", True)))
+		self.extra_demand_use_default.toggled.connect(lambda *_: self._update_extra_demand_state())
+		self._add_solver_row(solver_form, "extra_demand_use_default", "Use Default Extra Demand", self.extra_demand_use_default)
+
+		extra_demand_default = self._wdn_extra_demand_default()
+		extra_demand_initial = float(getattr(defaults, "extra_demand", 1.2))
+		if self.extra_demand_use_default.isChecked() and extra_demand_default is not None:
+			extra_demand_initial = extra_demand_default
+		self.extra_demand = self._new_double_spin(0.0, 1e6, extra_demand_initial, decimals=6, step=0.1)
 		self._add_solver_row(solver_form, "extra_demand", "Extra Demand", self.extra_demand)
 
 		self.dynamic_multistart = QtWidgets.QCheckBox()
@@ -738,6 +835,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 
 		self._mode = defaults.mode
 		self._solver_group = solver_group
+		self._update_extra_demand_state()
 		self._update_visibility()
 
 	def set_mode(self, mode: str) -> None:
@@ -751,6 +849,8 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		self._solver_group.setVisible(True)
 		self._set_row_visible("match_total_demand", mode in {"W_d", "W_d_M", "C_d"})
 		self._set_solver_row_visible("method", show_method)
+		self._set_solver_row_visible("extra_demand_use_default", mode in {"W_d", "W_d_M", "C_d"})
+		self._set_solver_row_visible("extra_demand", mode in {"W_d", "W_d_M", "C_d"})
 		self._set_solver_row_visible("multi_starts", not dms_enabled)
 		self._set_solver_row_visible("dms_consistency", dms_enabled)
 		self._set_solver_row_visible("dms_deviation", dms_enabled)
@@ -762,6 +862,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		return _float_or_default(self.dms_radius.text(), float("inf"))
 
 	def get_payload(self) -> Dict[str, object]:
+		self._update_extra_demand_state()
 		return {
 			"METHOD": str(self.method.currentData()),
 			"NORM": self.norm_value.value(),
@@ -795,6 +896,9 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._node_pos: Dict[str, tuple[float, float]] = {}
 		self._measurement_set: set[str] = set()
 		self._reservoir_set: set[str] = set()
+		self._ls_current_set: set[str] = set()
+		self._ls_swap_out: Optional[str] = None
+		self._ls_swap_in: Optional[str] = None
 		self._show_sensors_mode = False
 		self._network = None
 		self._pipe_classes: Optional[Dict[str, Dict[str, float]]] = None
@@ -811,6 +915,9 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._node_pos = {}
 		self._measurement_set = set()
 		self._reservoir_set = set()
+		self._ls_current_set = set()
+		self._ls_swap_out = None
+		self._ls_swap_in = None
 		self._pipe_classes = None
 
 		inp_path = f"./wdn/{wdn_name}.inp"
@@ -850,6 +957,18 @@ class NetworkPlot(QtWidgets.QWidget):
 
 	def set_show_sensors_mode(self, enabled: bool) -> None:
 		self._show_sensors_mode = bool(enabled)
+		self._redraw()
+
+	def set_local_search_highlight(self, current_nodes: List[str], swap_out: Optional[str] = None, swap_in: Optional[str] = None) -> None:
+		self._ls_current_set = set(str(n) for n in current_nodes)
+		self._ls_swap_out = str(swap_out) if swap_out else None
+		self._ls_swap_in = str(swap_in) if swap_in else None
+		self._redraw()
+
+	def clear_local_search_highlight(self) -> None:
+		self._ls_current_set = set()
+		self._ls_swap_out = None
+		self._ls_swap_in = None
 		self._redraw()
 
 	def get_junction_nodes(self) -> List[str]:
@@ -906,6 +1025,24 @@ class NetworkPlot(QtWidgets.QWidget):
 			_scatter(others, "o", "#f2f2f2", "#333333")
 			_scatter(measurements, "h", "#90cdf4", "#1a365d")
 			_scatter(reservoirs, "s", "#90cdf4", "#1a365d")
+
+		# Local-search overlay:
+		# - current best nodes: blue hexagons
+		# - swap-out node: yellow hexagon
+		# - swap-in node: red hexagon
+		if self._ls_current_set or self._ls_swap_out or self._ls_swap_in:
+			valid_junctions = set(junctions)
+			swap_out = self._ls_swap_out if self._ls_swap_out in valid_junctions else None
+			swap_in = self._ls_swap_in if self._ls_swap_in in valid_junctions else None
+			current_nodes = [
+				n for n in self._ls_current_set
+				if n in valid_junctions and n != swap_out and n != swap_in
+			]
+			_scatter(sorted(current_nodes), "h", "#4f9dff", "#0b3d91", size=220.0, alpha=0.95)
+			if swap_out is not None:
+				_scatter([swap_out], "h", "#ffd966", "#8a5a00", size=260.0, alpha=1.0)
+			if swap_in is not None:
+				_scatter([swap_in], "h", "#ff6b6b", "#7f1d1d", size=260.0, alpha=1.0)
 
 		for node_id in self._node_ids:
 			pos = self._node_pos.get(node_id)
@@ -3089,7 +3226,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		)
 		self._ls_worker.status_updated.connect(self._on_ls_status)
 		self._ls_worker.row_added.connect(self._on_ls_row)
+		self._ls_worker.highlight_updated.connect(self._on_ls_highlight)
 		self._ls_worker.finished_signal.connect(self._on_ls_finished)
+		self.plot.set_local_search_highlight(nodes, None, None)
 		self._ls_worker.start()
 
 	def _cancel_local_search(self) -> None:
@@ -3105,18 +3244,27 @@ class MainWindow(QtWidgets.QMainWindow):
 		# Nothing to do live — ResultsTableDialog shown at the end.
 		pass
 
+	def _on_ls_highlight(self, current_nodes: list, swap_out: object, swap_in: object) -> None:
+		out_node = str(swap_out) if isinstance(swap_out, str) else None
+		in_node = str(swap_in) if isinstance(swap_in, str) else None
+		self.plot.set_local_search_highlight([str(n) for n in current_nodes], out_node, in_node)
+
 	def _on_ls_finished(self, rows: list) -> None:
 		self._ls_worker = None
 		self.ls_run_button.setEnabled(True)
 		self.ls_cancel_button.setEnabled(False)
-		self.ls_status_label.setText(f"Done. {len(rows)} configurations evaluated.")
-		self.ls_log.appendPlainText(f"--- Finished: {len(rows)} configurations evaluated ---")
+		self.plot.clear_local_search_highlight()
+		self.ls_status_label.setText("Done.")
 		if rows:
 			dlg = ResultsTableDialog(rows, comparison=False, parent=self)
 			dlg.show()
 
 	def _wdn_changed(self) -> None:
 		self.solver_params.wdn = self.wdn_input.currentText().strip()
+		if hasattr(self, "model_a"):
+			self.model_a.refresh_wdn_dependent_defaults()
+		if hasattr(self, "model_b"):
+			self.model_b.refresh_wdn_dependent_defaults()
 		if hasattr(self, "ls_use_default_nodes"):
 			self._ls_update_starting_nodes_state()
 		if not self._updating_measurement_text:

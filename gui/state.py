@@ -10,6 +10,7 @@ class SolverParams:
 	norm: float = 2.0
 	demand_lb: float = 1e-6
 	extra_demand: float = 1.2
+	extra_demand_use_default: bool = True
 	measurement_heads_equal_only: bool = True
 	measurement_sites: List[str] = field(default_factory=list)
 	measurement_source: str = "from_w_d"
