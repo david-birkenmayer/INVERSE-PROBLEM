@@ -860,6 +860,7 @@ def plot_demand_distance(
 	head_bounds: Dict[str, Tuple[float, float]] | None = None,
 	show_head_bounds_measurements: bool = False,
 	show_plot: bool = True,
+	show_only_changed_demands: bool = False,
 ) -> None:
 	import matplotlib.pyplot as plt
 	from matplotlib.offsetbox import AnnotationBbox, TextArea, HPacker, VPacker
@@ -945,12 +946,24 @@ def plot_demand_distance(
 		)
 		ax.add_artist(ab)
 
+	def _is_changed_demand(node_id: str, value: float) -> bool:
+		base = float(base_demands.get(node_id, 0.0))
+		return abs(float(value) - base) > 1e-12
+
+	def _format_changed_demand(node_id: str) -> str:
+		return f"d = {float(demands_a.get(node_id, 0.0)):.4f} | {float(demands_b.get(node_id, 0.0)):.4f}"
+
 	for node_id in wn.junction_name_list:
 		x, y = pos[node_id]
 		da = demands_a.get(node_id, 0.0)
 		db = demands_b.get(node_id, 0.0)
 		ha = heads_a.get(node_id, float("nan"))
 		hb = heads_b.get(node_id, float("nan"))
+		if show_only_changed_demands:
+			if not _is_changed_demand(node_id, da) and not _is_changed_demand(node_id, db):
+				continue
+			ax.text(x, y - 180, _format_changed_demand(node_id), fontsize=7, ha="center", va="top", color="#111111")
+			continue
 		green = "#2f855a"
 		segments_d = ["d = ", f"{da:.4f}", " | ", f"{db:.4f}"]
 		colors_d = ["#111111", "#2b6cb0", "#111111", green]
@@ -968,6 +981,8 @@ def plot_demand_distance(
 	for node_id in wn.reservoir_name_list:
 		if node_id not in pos:
 			continue
+		if show_only_changed_demands:
+			continue
 		x, y = pos[node_id]
 		ha = heads_a.get(node_id, float("nan"))
 		hb = heads_b.get(node_id, float("nan"))
@@ -981,6 +996,8 @@ def plot_demand_distance(
 		_colored_two_lines(ax, x, y - 210, segments_d, colors_d, segments_h, colors_h)
 
 	for pipe_name, pipe in wn.pipes():
+		if show_only_changed_demands:
+			continue
 		u = pipe.start_node_name
 		v = pipe.end_node_name
 		x = (pos[u][0] + pos[v][0]) / 2.0
@@ -1003,9 +1020,12 @@ def plot_demand_distance(
 		norm_label = "inf"
 	else:
 		norm_label = f"{norm_p:g}"
-	ax.set_title(
-		f"Max demand-distance solution ({norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
-	)
+	if show_only_changed_demands:
+		ax.set_title("Demand-distance solution (demand deltas only)")
+	else:
+		ax.set_title(
+			f"Max demand-distance solution ({norm_label}-norm, p={measurement_count}, radius={radius:.5f})"
+		)
 	ax.axis("off")
 	plt.tight_layout()
 	fig.savefig(os.path.join(output_dir, "demand_distance.png"), dpi=200)

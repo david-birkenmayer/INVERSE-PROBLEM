@@ -1,0 +1,87 @@
+{
+  "best_mode_value": 32.188234629583235,
+  "method": "xd",
+  "mode": "B",
+  "runs": [
+    {
+      "center_success": null,
+      "max_violation": 1.7283535713730203e-11,
+      "min_demand_viol": 6.928557796936907e-10,
+      "mode_value": 7.911250891481346,
+      "run": 0,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 5.203570907497124e-11,
+      "min_demand_viol": 3.391046748957294e-10,
+      "mode_value": 25.588240439947455,
+      "run": 1,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 1.1795009413617663e-12,
+      "min_demand_viol": 3.7128769503347314e-10,
+      "mode_value": 19.679951746661317,
+      "run": 2,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 5.138414742589248e-07,
+      "min_demand_viol": 1.8918765963549244e-09,
+      "mode_value": 4.510578860772218,
+      "run": 3,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 1.2931877790833823e-12,
+      "min_demand_viol": 4.954543789126298e-10,
+      "mode_value": 16.19835919208353,
+      "run": 4,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 3.55210860725208e-11,
+      "min_demand_viol": 2.1202749209137117e-09,
+      "mode_value": 4.530334963194164,
+      "run": 5,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 1.163691365491104e-11,
+      "min_demand_viol": 4.6527560016579317e-10,
+      "mode_value": 32.188234629583235,
+      "run": 6,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 100.0,
+      "min_demand_viol": -0.015000000596046448,
+      "mode_value": 0.0,
+      "run": 7,
+      "success": false
+    },
+    {
+      "center_success": null,
+      "max_violation": 4.048239812899322e-11,
+      "min_demand_viol": 4.2412621331644473e-10,
+      "mode_value": 31.608980804980142,
+      "run": 8,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 1.1470991031543991e-10,
+      "min_demand_viol": 1.6791753404410414e-10,
+      "mode_value": 28.7055727338429,
+      "run": 9,
+      "success": true
+    }
+  ]
+}

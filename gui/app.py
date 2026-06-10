@@ -109,7 +109,13 @@ def _sync_wdn_index(wdn: str) -> Dict[str, str]:
 	return index
 
 
-def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, name_prefix: str = "") -> "tuple[str, str, float, int] | None":
+def _build_demand_distance_plot_fn(
+	data_dir: str,
+	temp_dir: str,
+	index: int,
+	name_prefix: str = "",
+	show_only_changed_demands: bool = False,
+) -> "tuple[str, str, float, int] | None":
 	"""Module-level helper so PlotWorker can call it from a background thread."""
 	from image import plot_demand_distance
 
@@ -185,6 +191,7 @@ def _build_demand_distance_plot_fn(data_dir: str, temp_dir: str, index: int, nam
 		measurement_total_demand=measurement_total_demand,
 		solver_reference_demands=solver_reference_demands,
 		configured_extra_demand=configured_extra_demand,
+		show_only_changed_demands=show_only_changed_demands,
 	)
 
 	src_png = os.path.join(temp_dir, "demand_distance.png")
@@ -215,13 +222,16 @@ def _solver_cache_hash_payload(payload: Dict[str, object]) -> Dict[str, object]:
 	GUI state contains lowercase helper fields (from SolverParams) that must not
 	affect cache identity.
 	"""
-	return {
+	hash_payload = {
 		str(k): v
 		for k, v in payload.items()
 		if isinstance(k, str)
 		and k.isupper()
-		and k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS"}
+		and k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS", "LINEARIZATION_EPS_SCALE"}
 	}
+	if str(hash_payload.get("MODE", "")) == "B":
+		hash_payload.pop("NORM", None)
+	return hash_payload
 
 
 def _float_or_default(value: object, default: float) -> float:
@@ -249,6 +259,7 @@ class SolverWorker(QtCore.QThread):
 	"""Runs the solver subprocess off the GUI thread, streaming progress lines."""
 
 	progress_updated = QtCore.pyqtSignal(int, int)   # current, total
+	linearization_updated = QtCore.pyqtSignal(int, int, int)  # checked, total, certified
 	finished_with_code = QtCore.pyqtSignal(int, str, str)  # returncode, stdout, stderr
 
 	def __init__(self, cmd: List[str], parent: "QtWidgets.QWidget | None" = None) -> None:
@@ -281,6 +292,9 @@ class SolverWorker(QtCore.QThread):
 			m = re.match(r"^PROGRESS:\s*(\d+)/(\d+)", line)
 			if m:
 				self.progress_updated.emit(int(m.group(1)), int(m.group(2)))
+			lm = re.match(r"^LINEARIZATION_PROGRESS:\s*(\d+)/(\d+)\s+certified=(\d+)", line)
+			if lm:
+				self.linearization_updated.emit(int(lm.group(1)), int(lm.group(2)), int(lm.group(3)))
 
 		proc.stdout.close()
 		proc.wait()
@@ -303,17 +317,25 @@ class PlotWorker(QtCore.QThread):
 		self,
 		plot_dir_labels: "List[tuple[str, str]]",
 		temp_dir: str,
+		show_only_changed_demands: bool,
 		parent: "QtWidgets.QWidget | None" = None,
 	) -> None:
 		super().__init__(parent)
 		self._plot_dir_labels = plot_dir_labels
 		self._temp_dir = temp_dir
+		self._show_only_changed_demands = show_only_changed_demands
 
 	def run(self) -> None:
 		items: List[tuple[str, str, float, int]] = []
 		total = len(self._plot_dir_labels)
 		for idx, (run_dir, label) in enumerate(self._plot_dir_labels, start=1):
-			built = _build_demand_distance_plot_fn(run_dir, self._temp_dir, idx, label)
+			built = _build_demand_distance_plot_fn(
+				run_dir,
+				self._temp_dir,
+				idx,
+				label,
+				self._show_only_changed_demands,
+			)
 			if built is not None:
 				items.append(built)
 			self.plot_progress.emit(idx, total)
@@ -847,10 +869,11 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 		show_method = mode in {"W_d", "W_d_M", "C_d"}
 		dms_enabled = self.dynamic_multistart.isChecked() if hasattr(self, "dynamic_multistart") else False
 		self._solver_group.setVisible(True)
-		self._set_row_visible("match_total_demand", mode in {"W_d", "W_d_M", "C_d"})
+		self._set_row_visible("norm", mode != "B")
+		self._set_row_visible("match_total_demand", mode in {"W_d", "W_d_M", "C_d", "B"})
 		self._set_solver_row_visible("method", show_method)
-		self._set_solver_row_visible("extra_demand_use_default", mode in {"W_d", "W_d_M", "C_d"})
-		self._set_solver_row_visible("extra_demand", mode in {"W_d", "W_d_M", "C_d"})
+		self._set_solver_row_visible("extra_demand_use_default", mode in {"W_d", "W_d_M", "C_d", "B"})
+		self._set_solver_row_visible("extra_demand", mode in {"W_d", "W_d_M", "C_d", "B"})
 		self._set_solver_row_visible("multi_starts", not dms_enabled)
 		self._set_solver_row_visible("dms_consistency", dms_enabled)
 		self._set_solver_row_visible("dms_deviation", dms_enabled)
@@ -902,6 +925,8 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._show_sensors_mode = False
 		self._network = None
 		self._pipe_classes: Optional[Dict[str, Dict[str, float]]] = None
+		self._linearized_pipes: Dict[str, float] = {}
+		self._linearization_scale_needed: Dict[str, float] = {}
 		self._init_ui()
 
 	def _init_ui(self) -> None:
@@ -919,6 +944,8 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._ls_swap_out = None
 		self._ls_swap_in = None
 		self._pipe_classes = None
+		self._linearized_pipes = {}
+		self._linearization_scale_needed = {}
 
 		inp_path = f"./wdn/{wdn_name}.inp"
 		network = load_inp_network(inp_path)
@@ -949,6 +976,14 @@ class NetworkPlot(QtWidgets.QWidget):
 			"c_bounds": c_bounds,
 			"C_bounds": C_bounds,
 		}
+		self._redraw()
+
+	def set_linearized_pipes(self, linearized_pipes: Dict[str, float]) -> None:
+		self._linearized_pipes = {str(pipe_id): float(q0) for pipe_id, q0 in linearized_pipes.items()}
+		self._redraw()
+
+	def set_linearization_scale_needed(self, required_scale: Dict[str, float]) -> None:
+		self._linearization_scale_needed = {str(pipe_id): float(val) for pipe_id, val in required_scale.items()}
 		self._redraw()
 
 	def set_measurements(self, nodes: List[str]) -> None:
@@ -1001,9 +1036,20 @@ class NetworkPlot(QtWidgets.QWidget):
 			end = self._node_pos.get(pipe.end_node)
 			if start is None or end is None:
 				continue
-			edge_color = "#cbd5e0" if self._show_sensors_mode else "#a0aec0"
+			edge_color = "#8b5cf6" if pipe.pipe_id in self._linearized_pipes else ("#cbd5e0" if self._show_sensors_mode else "#a0aec0")
 			edge_alpha = 0.35 if self._show_sensors_mode else 1.0
-			self.ax.plot([start[0], end[0]], [start[1], end[1]], color=edge_color, linewidth=1.0, alpha=edge_alpha, zorder=1)
+			line_width = 2.4 if pipe.pipe_id in self._linearized_pipes else 1.0
+			self.ax.plot([start[0], end[0]], [start[1], end[1]], color=edge_color, linewidth=line_width, alpha=edge_alpha, zorder=1)
+			if self._linearization_scale_needed:
+				scale_req = self._linearization_scale_needed.get(str(pipe.pipe_id))
+				if scale_req is not None:
+					x = (start[0] + end[0]) / 2.0
+					y = (start[1] + end[1]) / 2.0
+					if math.isinf(float(scale_req)):
+						label = "eps_scale*=inf"
+					else:
+						label = f"eps_scale*={float(scale_req):.3g}"
+					self.ax.text(x, y, label, fontsize=6, ha="center", va="center", color="#4a1d96", zorder=4)
 
 		junctions = [n for n in self._node_ids if n not in self._reservoir_set]
 		measurements = [n for n in junctions if n in self._measurement_set]
@@ -1719,6 +1765,24 @@ class MainWindow(QtWidgets.QMainWindow):
 		outer = QtWidgets.QVBoxLayout(container)
 		outer.setContentsMargins(4, 4, 4, 4)
 
+		linear_group = QtWidgets.QGroupBox("Linearization")
+		linear_form = QtWidgets.QFormLayout(linear_group)
+		self.linearization_check = QtWidgets.QCheckBox()
+		self.linearization_check.setChecked(False)
+		self.linearization_check.toggled.connect(lambda *_: self._update_linearization_controls())
+		linear_form.addRow("Enable", self.linearization_check)
+		self.linearization_eps_label = QtWidgets.QLabel("epsilon_h scale")
+		self.linearization_eps = self._new_double_spin(0.0, 1e6, 1e-3, decimals=6, step=1e-4)
+		self.linearization_eps.valueChanged.connect(lambda *_: self._on_linearization_eps_changed())
+		linear_form.addRow(self.linearization_eps_label, self.linearization_eps)
+		self.linearization_button = QtWidgets.QPushButton("Look for Linearization")
+		self.linearization_button.clicked.connect(self._look_for_linearization)
+		linear_form.addRow(self.linearization_button)
+		self.linearization_status = QtWidgets.QLabel("Linearization disabled.")
+		self.linearization_status.setWordWrap(True)
+		linear_form.addRow("Status", self.linearization_status)
+		outer.addWidget(linear_group)
+
 		# Shared fields
 		shared_group = QtWidgets.QGroupBox("Shared")
 		shared_form = QtWidgets.QFormLayout(shared_group)
@@ -1726,6 +1790,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.mode_input.addItem("W_d(M)", "W_d_M")
 		self.mode_input.addItem("W_d", "W_d")
 		self.mode_input.addItem("W_h(M)", "W_h_M")
+		self.mode_input.addItem("B (Bregman)", "B")
 		self.mode_input.addItem("C_d", "C_d")
 		self.mode_input.addItem("W_h", "W_h")
 		self.mode_input.addItem("C_h - fixed", "C_h_fixed")
@@ -1765,6 +1830,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.generate_plots_check = QtWidgets.QCheckBox("Generate Plots")
 		self.generate_plots_check.setChecked(True)
 		opts_layout.addWidget(self.generate_plots_check)
+		self.show_only_demand_deltas_check = QtWidgets.QCheckBox("Only show demand deltas")
+		self.show_only_demand_deltas_check.setChecked(True)
+		opts_layout.addWidget(self.show_only_demand_deltas_check)
 		self.comparison_mode_check = QtWidgets.QCheckBox("Comparison Mode")
 		self.comparison_mode_check.setChecked(False)
 		opts_layout.addWidget(self.comparison_mode_check)
@@ -1802,6 +1870,109 @@ class MainWindow(QtWidgets.QMainWindow):
 		outer.addStretch()
 
 		self.tabs.addTab(scroll, "Solver")
+		self._linearization_ready = False
+		self._linearization_lookup_done = False
+		self._linearized_pipe_ids: Dict[str, float] = {}
+		self._linearized_pipe_ids_base: Dict[str, float] = {}
+		self._linearization_scale_required: Dict[str, float] = {}
+		self._linearization_lookup_active = False
+		self._linearization_auto_solve_pending = False
+		self._update_linearization_controls()
+
+	def _set_linearization_status(self, text: str) -> None:
+		if hasattr(self, "linearization_status"):
+			self.linearization_status.setText(str(text))
+
+	def _update_linearization_controls(self) -> None:
+		enabled = bool(self.linearization_check.isChecked()) if hasattr(self, "linearization_check") else False
+		if hasattr(self, "linearization_eps"):
+			self.linearization_eps.setVisible(enabled)
+			self.linearization_eps.setEnabled(enabled and self._linearization_lookup_done)
+		if hasattr(self, "linearization_eps_label"):
+			self.linearization_eps_label.setVisible(enabled)
+		if hasattr(self, "linearization_button"):
+			self.linearization_button.setVisible(enabled)
+		if not enabled:
+			self._linearization_ready = False
+			self._linearization_lookup_done = False
+			self._linearized_pipe_ids = {}
+			self._linearized_pipe_ids_base = {}
+			self._linearization_scale_required = {}
+			if hasattr(self, "plot"):
+				self.plot.set_linearized_pipes({})
+				self.plot.set_linearization_scale_needed({})
+			self._set_linearization_status("Linearization disabled.")
+		else:
+			if self._linearization_lookup_done:
+				self._set_linearization_status(
+					f"Lookup done: {len(self._linearized_pipe_ids)} pipes linearizable at eps scale {self.linearization_eps.value():.3g}."
+				)
+			else:
+				self._set_linearization_status("Not certified yet. Run 'Look for Linearization'.")
+		if hasattr(self, "solve_button"):
+			self.solve_button.setEnabled((not enabled) or self._linearization_lookup_done)
+
+	def _linearization_payload_from_widget(self, model_widget: "SolverModelWidget", lookup_only: bool) -> Dict[str, object]:
+		payload = self._solver_payload_from_widget(model_widget)
+		payload["LINEARIZATION_LOOKUP"] = bool(lookup_only)
+		payload["LINEARIZATION_ENABLED"] = bool(self.linearization_check.isChecked() and not lookup_only)
+		payload["LINEARIZATION_EPS_SCALE"] = float(self.linearization_eps.value()) if hasattr(self, "linearization_eps") else 1e-3
+		if not lookup_only and self.linearization_check.isChecked() and self._linearization_lookup_done:
+			payload["LINEARIZED_PIPES"] = dict(self._linearized_pipe_ids)
+		payload["_linearization_lookup"] = bool(lookup_only)
+		return payload
+
+	def _on_linearization_eps_changed(self) -> None:
+		if not getattr(self, "_linearization_lookup_done", False):
+			return
+		self._recompute_linearized_pipes_from_scale()
+		self._set_linearization_status(
+			f"Lookup done: {len(self._linearized_pipe_ids)} pipes linearizable at eps scale {self.linearization_eps.value():.3g}."
+		)
+
+	def _recompute_linearized_pipes_from_scale(self) -> None:
+		if not self._linearization_scale_required:
+			self._linearized_pipe_ids = {}
+			if hasattr(self, "plot"):
+				self.plot.set_linearized_pipes({})
+			return
+		eps_scale = float(self.linearization_eps.value()) if hasattr(self, "linearization_eps") else 0.0
+		selected: Dict[str, float] = {}
+		for pipe_id, need in self._linearization_scale_required.items():
+			if math.isinf(float(need)):
+				continue
+			if float(need) <= eps_scale and pipe_id in self._linearized_pipe_ids_base:
+				selected[str(pipe_id)] = float(self._linearized_pipe_ids_base[pipe_id])
+		self._linearized_pipe_ids = selected
+		self._linearization_ready = bool(self._linearization_lookup_done)
+		if hasattr(self, "plot"):
+			self.plot.set_linearized_pipes(self._linearized_pipe_ids)
+
+	def _launch_solver_runs(self, runs: List[tuple[str, Dict[str, object]]]) -> None:
+		self._pending_runs = []
+		self._completed_runs = []
+		for label, payload in runs:
+			self._pending_runs.append((label, dict(payload)))
+		self.solve_button.setEnabled(False)
+		self.progress_bar.setRange(0, 1)
+		self.progress_bar.setValue(0)
+		self.progress_bar.setVisible(True)
+		self.progress_label.setVisible(True)
+		self._start_next_solver_run()
+
+	def _look_for_linearization(self) -> None:
+		if self._solver_worker is not None and self._solver_worker.isRunning():
+			return
+		if self._current_mode() != "W_d":
+			QtWidgets.QMessageBox.information(self, "Linearization", "Linearization lookup is currently implemented for W_d only.")
+			return
+		if not self.linearization_check.isChecked():
+			return
+		self._linearization_lookup_active = True
+		self._linearization_lookup_done = False
+		self._set_linearization_status("Running certification lookup...")
+		payload = self._linearization_payload_from_widget(self.model_a, lookup_only=True)
+		self._launch_solver_runs([("L", payload)])
 
 	def _build_local_search_tab(self) -> None:
 		scroll = QtWidgets.QScrollArea()
@@ -3412,7 +3583,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 	def _parse_measurement_data_input(self, text: str) -> tuple[bool, Dict[str, float] | None]:
 		payload = text.strip()
-		if self._current_mode() not in {"W_d", "W_h", "W_d_M", "W_h_M", "C_d", "C_h", "C_h_fixed"} or self._measurement_source_value() != "custom":
+		if self._current_mode() not in {"W_d", "W_h", "B", "W_d_M", "W_h_M", "C_d", "C_h", "C_h_fixed"} or self._measurement_source_value() != "custom":
 			return True, None
 		if not payload:
 			return False, None
@@ -3525,12 +3696,14 @@ class MainWindow(QtWidgets.QMainWindow):
 		if mode in {"W_d_M", "W_h_M"}:
 			payload["MEASUREMENT_HEADS_EQUAL_ONLY"] = False
 		# A-priori W-modes must not depend on a fixed measurement instance.
-		if mode in {"W_d", "W_h"}:
+		if mode in {"W_d", "W_h", "B"}:
 			payload["MEASUREMENT_SOURCE"] = "base"
 			payload["MEASUREMENT_DATA"] = None
 		# xd backend currently supports equality-only measurement mode, so route W_d(M) to classical.
 		if mode == "W_d_M" and str(payload.get("METHOD", "")).lower() == "xd":
 			payload["METHOD"] = "classical"
+		if mode == "B":
+			payload.pop("NORM", None)
 		return payload
 
 	def _expand_measurement_sets(self) -> List[List[str]]:
@@ -3576,6 +3749,7 @@ class MainWindow(QtWidgets.QMainWindow):
 	def _run_solver(self) -> None:
 		if self._solver_worker is not None and self._solver_worker.isRunning():
 			return  # already running
+		self._linearization_lookup_active = False
 
 		if not self._measurement_valid:
 			QtWidgets.QMessageBox.warning(
@@ -3616,20 +3790,20 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.status_bar.showMessage("Solver not started: custom measurement with combinatorial site spec.")
 			return
 
-		base_a = self._solver_payload_from_widget(self.model_a)
-		self._pending_runs = []
-		self._completed_runs = []
-		self._pending_runs.append(("A", dict(base_a)))
+		if self.linearization_check.isChecked() and not self._linearization_lookup_done:
+			self._linearization_auto_solve_pending = True
+			self._set_linearization_status("Running certification lookup before solve...")
+			self._look_for_linearization()
+			return
+		self._linearization_auto_solve_pending = False
+
+		runs: List[tuple[str, Dict[str, object]]] = []
+		base_a = self._linearization_payload_from_widget(self.model_a, lookup_only=False) if self.linearization_check.isChecked() else self._solver_payload_from_widget(self.model_a)
+		runs.append(("A", dict(base_a)))
 		if self.comparison_mode_check.isChecked():
 			base_b = self._solver_payload_from_widget(self.model_b)
-			self._pending_runs.append(("B", dict(base_b)))
-
-		self.solve_button.setEnabled(False)
-		self.progress_bar.setRange(0, 1)
-		self.progress_bar.setValue(0)
-		self.progress_bar.setVisible(True)
-		self.progress_label.setVisible(True)
-		self._start_next_solver_run()
+			runs.append(("B", dict(base_b)))
+		self._launch_solver_runs(runs)
 
 	def _start_next_solver_run(self) -> None:
 		if not self._pending_runs:
@@ -3665,6 +3839,7 @@ class MainWindow(QtWidgets.QMainWindow):
 							f"Run {label}: cached DMS inconclusive for r={radius_ref:.6f} in [{lower:.6f}, {upper:.6f}] ({cert or 'n/a'}), recomputing..."
 						)
 			if use_cached:
+				self._apply_linearization_result(resolved_cached, bool(payload.get("_linearization_lookup", False)))
 				self.status_bar.showMessage(f"Run {label} cached: {resolved_cached}")
 				self._completed_runs.append((label, 0, "", "", resolved_cached))
 				self._pending_runs.pop(0)
@@ -3688,6 +3863,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		cmd = [sys.executable, "inverse.py", "--config", config_path]
 		self._solver_worker = SolverWorker(cmd, self)
 		self._solver_worker.progress_updated.connect(self._on_solver_progress)
+		self._solver_worker.linearization_updated.connect(self._on_linearization_progress)
 		self._solver_worker.finished_with_code.connect(self._on_solver_finished)
 		self._solver_worker.start()
 		self.status_bar.showMessage(f"Running solver (run {run_num}/{total_runs}, model {label})...")
@@ -3700,6 +3876,13 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.progress_label.setText(f"Run {run_num}/{total_runs} ({self._active_run_label})  {current} / {total}")
 		self.status_bar.showMessage(
 			f"Solver run {run_num}/{total_runs} ({self._active_run_label}): configuration {current} of {total}..."
+		)
+
+	def _on_linearization_progress(self, checked: int, total: int, certified: int) -> None:
+		if not hasattr(self, "linearization_check") or not self.linearization_check.isChecked():
+			return
+		self._set_linearization_status(
+			f"Scanning pipes: {checked}/{total} checked, {certified} linearizable."
 		)
 
 	def _on_solver_finished(self, returncode: int, stdout: str, stderr: str) -> None:
@@ -3722,6 +3905,7 @@ class MainWindow(QtWidgets.QMainWindow):
 				save_index(index_path, index, ROOT_DIR)
 			solver_hash = str(payload.get("SOLVER_HASH", ""))
 			_write_gui_hash(resolvedout, solver_hash)
+			self._apply_linearization_result(resolvedout, bool(payload.get("_linearization_lookup", False)))
 			self.status_bar.showMessage(f"Run {label} done: {output_dir}")
 		else:
 			output_dir = ""
@@ -3731,8 +3915,87 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._pending_runs.pop(0)
 		self._start_next_solver_run()
 
+	def _apply_linearization_result(self, output_dir: str, lookup_run: bool) -> None:
+		lin_path = os.path.join(output_dir, "linearization.json")
+		if not os.path.isfile(lin_path):
+			if lookup_run:
+				self._linearization_ready = False
+				self._linearization_lookup_done = False
+				self._linearized_pipe_ids = {}
+				self._linearized_pipe_ids_base = {}
+				self._linearization_scale_required = {}
+				if hasattr(self, "plot"):
+					self.plot.set_linearized_pipes({})
+					self.plot.set_linearization_scale_needed({})
+				self.solve_button.setEnabled(False)
+				self._set_linearization_status("Lookup finished, but no linearization artifact was found.")
+			return
+		try:
+			payload = _read_json(lin_path)
+		except Exception:
+			if lookup_run:
+				self._set_linearization_status("Lookup finished, but linearization artifact could not be read.")
+			return
+		linearized = payload.get("linearized_pipes", {})
+		if not isinstance(linearized, dict):
+			linearized = {}
+		self._linearized_pipe_ids_base = {str(pid): float(q0) for pid, q0 in linearized.items()}
+
+		scale_required: Dict[str, float] = {}
+		pipe_bounds = payload.get("pipe_bounds", {})
+		epsilon_h = _float_or_default(payload.get("epsilon_h"), 0.0)
+		median_delta_h = _float_or_default(payload.get("median_delta_h"), 1.0)
+		scale_now = epsilon_h / max(median_delta_h, 1e-12)
+		if isinstance(pipe_bounds, dict):
+			for pipe_id, raw in pipe_bounds.items():
+				if not isinstance(raw, dict):
+					continue
+				q0 = _float_or_default(raw.get("q0"), 0.0)
+				self._linearized_pipe_ids_base[str(pipe_id)] = q0
+				q_min = _float_or_default(raw.get("q_min"), 0.0)
+				q_max = _float_or_default(raw.get("q_max"), 0.0)
+				delta_now = abs(_float_or_default(raw.get("delta_e"), 0.0))
+				delta_req = max(q_max - q0, q0 - q_min, 0.0)
+				sign_change = (q0 > 0.0 and (q_min <= 0.0 or q_max <= 0.0)) or (q0 < 0.0 and (q_min >= 0.0 or q_max >= 0.0))
+				if sign_change:
+					scale_required[str(pipe_id)] = float("inf")
+					continue
+				if delta_req <= 0.0:
+					scale_required[str(pipe_id)] = 0.0
+					continue
+				if delta_now <= 1e-12:
+					scale_required[str(pipe_id)] = float("inf")
+					continue
+				scale_required[str(pipe_id)] = float(scale_now) * float((delta_req / delta_now) ** 2)
+		self._linearization_scale_required = scale_required
+
+		if hasattr(self, "plot"):
+			self.plot.set_linearization_scale_needed(self._linearization_scale_required)
+		self._linearization_lookup_done = True
+		self._recompute_linearized_pipes_from_scale()
+		self._update_linearization_controls()
+		if lookup_run:
+			self.solve_button.setEnabled(self._linearization_lookup_done)
+			if self._linearization_lookup_done:
+				self._set_linearization_status(
+					f"Lookup done: {len(self._linearized_pipe_ids)} linearizable at eps scale {self.linearization_eps.value():.3g}, {len(self._linearization_scale_required)} pipes scored."
+				)
+				self.status_bar.showMessage(
+					f"Linearization lookup complete: {len(self._linearized_pipe_ids)} linearizable pipes."
+				)
+			else:
+				self._set_linearization_status("Certification complete: 0 pipes certified.")
+				self.status_bar.showMessage("No pipes were certified for linearization.")
+
 	def _finalize_all_runs(self) -> None:
-		self.solve_button.setEnabled(True)
+		if getattr(self, "_linearization_lookup_active", False):
+			self.solve_button.setEnabled(self._linearization_lookup_done)
+			self._linearization_lookup_active = False
+			if self._linearization_auto_solve_pending and self._linearization_lookup_done:
+				QtCore.QTimer.singleShot(0, self._run_solver)
+				self._linearization_auto_solve_pending = False
+		else:
+			self.solve_button.setEnabled(True)
 		self.progress_bar.setVisible(False)
 		self.progress_label.setVisible(False)
 
@@ -3807,7 +4070,13 @@ class MainWindow(QtWidgets.QMainWindow):
 		return sorted(dirs)
 
 	def _build_demand_distance_plot(self, data_dir: str, temp_dir: str, index: int, name_prefix: str = "") -> tuple[str, str, float, int] | None:
-		return _build_demand_distance_plot_fn(data_dir, temp_dir, index, name_prefix)
+		return _build_demand_distance_plot_fn(
+			data_dir,
+			temp_dir,
+			index,
+			name_prefix,
+			bool(self.show_only_demand_deltas_check.isChecked()),
+		)
 
 	def _show_demand_distance_plots(self, dirs_with_labels: "List[tuple[str, str]]") -> None:
 		if not dirs_with_labels:
@@ -3821,7 +4090,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.progress_bar.setVisible(True)
 		self.progress_label.setVisible(True)
 
-		self._plot_worker = PlotWorker(dirs_with_labels, temp_dir, self)
+		self._plot_worker = PlotWorker(
+			dirs_with_labels,
+			temp_dir,
+			bool(self.show_only_demand_deltas_check.isChecked()),
+			self,
+		)
 		self._plot_worker.plots_ready.connect(
 			lambda items, td: self._on_plots_ready(items, td)
 		)

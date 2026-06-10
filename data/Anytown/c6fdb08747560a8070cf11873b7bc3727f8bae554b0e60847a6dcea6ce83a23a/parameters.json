@@ -1,0 +1,45 @@
+{
+  "DEMAND_LB": 1e-06,
+  "DEMAND_MODEL": null,
+  "DMS_CONSISTENCY": 3,
+  "DMS_DEVIATION": 0.95,
+  "DMS_DISCARD_UNCLEAR": true,
+  "DMS_MAX_STARTS": 10,
+  "DMS_RADIUS": 0.6408226092235427,
+  "DYNAMIC_MULTISTART": true,
+  "EXTRA_DEMAND": 0.5,
+  "HEADLOSS_MODEL": "hw",
+  "HEADLOSS_MODEL_LOCAL": "hw",
+  "HEXALY_LICENSE_PATH": "/home/birkenma/opt/Hexaly_14_5/license.dat",
+  "HEXALY_SEED": 0,
+  "HEXALY_TIME_LIMIT": 30,
+  "HEXALY_VERBOSITY": 2,
+  "MATCH_RESERVOIR_OUTFLOW_BETWEEN_PAIRS": true,
+  "MEASUREMENT_DATA": {
+    "-1": 0.18912002444267273,
+    "180": 120.0,
+    "40": 106.60629272460938,
+    "80": 106.3165512084961
+  },
+  "MEASUREMENT_HEADS_EQUAL_ONLY": true,
+  "MEASUREMENT_NODES": [
+    "40",
+    "80"
+  ],
+  "MEASUREMENT_SET_COUNT": 1,
+  "MEASUREMENT_SITES": [
+    "40",
+    "80"
+  ],
+  "MEASUREMENT_SOURCE": "base",
+  "METHOD": "xd",
+  "MODE": "W_d",
+  "MULTI_STARTS": 1,
+  "MULTI_START_NOISE": 0.05,
+  "MULTI_START_NOISE_REL": 0.25,
+  "MULTI_START_SEED": null,
+  "NORM": 2.0,
+  "OUTPUT_DIR": "data/Anytown/c6fdb08747560a8070cf11873b7bc3727f8bae554b0e60847a6dcea6ce83a23a",
+  "WDN": "Anytown",
+  "WDN_NAME": "Anytown"
+}

@@ -1,0 +1,39 @@
+{
+  "best_mode_value": 0.7059503196635253,
+  "method": "xd",
+  "mode": "W_d",
+  "runs": [
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 4.933583101426886e-08,
+      "mode_value": 0.6531818885555669,
+      "run": 0,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 1.2909379520920083e-07,
+      "min_demand_viol": -9.817943895373826e-07,
+      "mode_value": 0.5641714385042365,
+      "run": 1,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 4.933583101426886e-08,
+      "mode_value": 0.6531818885555669,
+      "run": 2,
+      "success": true
+    },
+    {
+      "center_success": null,
+      "max_violation": 0.0,
+      "min_demand_viol": 4.19794429704079e-08,
+      "mode_value": 0.7059503196635253,
+      "run": 3,
+      "success": true
+    }
+  ]
+}

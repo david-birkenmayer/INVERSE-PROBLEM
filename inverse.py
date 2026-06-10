@@ -16,13 +16,14 @@ from gui.cache import compute_hash, load_index, save_index
 from step1_io import compute_pipe_resistances, compute_pipe_resistances_hw, load_inp_network
 from step2_estimation import simulate_base_scenario
 from step3_solver import SolverResult
+from step3_solver import solve_single_pipe_bounds
 from step3_solver_hexaly import solve_head_center_in_class_hexaly, solve_max_demand_distance_hexaly
 from step3_solver_xd_hexaly import solve_max_demand_distance_xd_hexaly
 
 
 WDN = "Alperovits"
 MEASUREMENT_SITES: object = 2
-MODE = "W_d"  # W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed
+MODE = "W_d"  # W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed, B
 METHOD = "xd"  # xd, classical (used for W_d/C_d)
 NORM = 2.0
 DEMAND_LB = 1e-6
@@ -36,6 +37,10 @@ DMS_DEVIATION = 0.95
 DMS_RADIUS = float("inf")
 DMS_MAX_STARTS = 10
 DMS_DISCARD_UNCLEAR = True
+LINEARIZATION_LOOKUP = False
+LINEARIZATION_ENABLED = False
+LINEARIZATION_EPS_SCALE = 1e-3
+LINEARIZED_PIPES = None
 MEASUREMENT_HEADS_EQUAL_ONLY = True
 HEXALY_LICENSE_PATH = os.path.expanduser("~/opt/Hexaly_14_5/license.dat")
 HEXALY_TIME_LIMIT = 30
@@ -64,6 +69,107 @@ def _write_json(path: str, payload: Dict[str, object]) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def _linearization_scale_from_heads(network, base_heads: Dict[str, float]) -> float:
+    deltas: List[float] = []
+    for pipe in network.pipes.values():
+        h_u = float(base_heads.get(pipe.start_node, 0.0))
+        h_v = float(base_heads.get(pipe.end_node, 0.0))
+        deltas.append(abs(h_u - h_v))
+    if not deltas:
+        return 1.0
+    return float(np.median(deltas))
+
+
+def _linearization_certificate(
+    network,
+    pipe_resistances: Dict[str, float],
+    base_flows: Dict[str, float],
+    base_heads: Dict[str, float],
+    sensor_heads: Dict[str, float],
+    measurement_nodes: List[str],
+    measurement_heads_equal_only_local: bool,
+    reservoir_node: str | None,
+    reservoir_outflow: float | None,
+    demand_lb: float,
+    demand_lb_per_node: Dict[str, float],
+    total_demand: float | None,
+    total_demand_upper: float | None,
+    initial_guess: SolverResult,
+    epsilon_h_scale: float,
+) -> Dict[str, object]:
+    median_delta_h = _linearization_scale_from_heads(network, base_heads)
+    epsilon_h = float(epsilon_h_scale) * float(median_delta_h)
+    linearized: Dict[str, float] = {}
+    bounds: Dict[str, Dict[str, float]] = {}
+    total_pipes = len(network.pipes)
+    checked = 0
+
+    for pipe_id in network.pipes:
+        q0 = float(base_flows.get(pipe_id, 0.0))
+        if q0 == 0.0:
+            checked += 1
+            print(
+                f"LINEARIZATION_PROGRESS: {checked}/{total_pipes} certified={len(linearized)}",
+                flush=True,
+            )
+            continue
+        res = solve_single_pipe_bounds(
+            network=network,
+            target_pipe=pipe_id,
+            sensor_heads=sensor_heads,
+            pipe_primary=set(),
+            pipe_secondary=set(),
+            c_secondary={},
+            C_primary={},
+            pipe_resistances=pipe_resistances,
+            preferred_flow_sign=base_flows,
+            reservoir_node=reservoir_node,
+            reservoir_outflow=reservoir_outflow,
+            total_demand=total_demand,
+            total_demand_upper=total_demand_upper,
+            demand_lb_per_node=demand_lb_per_node,
+            demand_lb=demand_lb,
+            initial_guess=initial_guess,
+            measurement_nodes=measurement_nodes,
+            measurement_heads_equal_only=measurement_heads_equal_only_local,
+        )
+        delta_e = math.sqrt(max(epsilon_h, 0.0) / max(float(pipe_resistances[pipe_id]), 1e-12))
+        q_min = float(res.q_min)
+        q_max = float(res.q_max)
+        lower = q0 - delta_e
+        upper = q0 + delta_e
+        same_sign = (q0 > 0.0 and q_min > 0.0 and q_max > 0.0) or (q0 < 0.0 and q_min < 0.0 and q_max < 0.0)
+        linearizable = same_sign and q_min >= lower and q_max <= upper
+        bounds[pipe_id] = {
+            "q0": q0,
+            "q_min": q_min,
+            "q_max": q_max,
+            "delta_e": delta_e,
+            "epsilon_h": epsilon_h,
+            "linearizable": bool(linearizable),
+            "min_success": bool(res.min_success),
+            "max_success": bool(res.max_success),
+            "min_violation": float(res.min_violation),
+            "max_violation": float(res.max_violation),
+            "min_demand_viol": float(res.min_demand_viol),
+            "max_demand_viol": float(res.max_demand_viol),
+        }
+        if linearizable:
+            linearized[pipe_id] = q0
+        checked += 1
+        print(
+            f"LINEARIZATION_PROGRESS: {checked}/{total_pipes} certified={len(linearized)}",
+            flush=True,
+        )
+
+    return {
+        "epsilon_h": epsilon_h,
+        "median_delta_h": median_delta_h,
+        "linearized_pipes": linearized,
+        "pipe_bounds": bounds,
+    }
+
+
 def _apply_config(config: Dict[str, object]) -> None:
     global WDN, MEASUREMENT_SITES, MODE, METHOD, _RAW_CONFIG
 
@@ -90,6 +196,10 @@ def _apply_config(config: Dict[str, object]) -> None:
         "DMS_RADIUS",
         "DMS_MAX_STARTS",
         "DMS_DISCARD_UNCLEAR",
+        "LINEARIZATION_LOOKUP",
+        "LINEARIZATION_ENABLED",
+        "LINEARIZATION_EPS_SCALE",
+        "LINEARIZED_PIPES",
         "MEASUREMENT_HEADS_EQUAL_ONLY",
         "HEXALY_LICENSE_PATH",
         "HEXALY_TIME_LIMIT",
@@ -164,7 +274,7 @@ def _sanitize_hash_payload(payload: Dict[str, object]) -> Dict[str, object]:
     return {
         str(k): v
         for k, v in payload.items()
-        if k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS"}
+        if k not in {"OUTPUT_DIR", "SOLVER_HASH", "_index", "_index_path", "DMS_RADIUS", "LINEARIZATION_EPS_SCALE"}
     }
 
 
@@ -458,6 +568,8 @@ def _mode_value(
             (result.heads_a.get(n, 0.0) - reference_heads.get(n, 0.0) for n in all_nodes),
             norm_p,
         )
+    if mode == "B":
+        return float(result.objective or 0.0)
     raise ValueError(f"Unsupported MODE: {mode}")
 
 
@@ -511,6 +623,10 @@ def _build_parameters_snapshot(
         "DMS_RADIUS": DMS_RADIUS,
         "DMS_MAX_STARTS": DMS_MAX_STARTS,
         "DMS_DISCARD_UNCLEAR": DMS_DISCARD_UNCLEAR,
+        "LINEARIZATION_LOOKUP": LINEARIZATION_LOOKUP,
+        "LINEARIZATION_ENABLED": LINEARIZATION_ENABLED,
+        "LINEARIZATION_EPS_SCALE": LINEARIZATION_EPS_SCALE,
+        "LINEARIZED_PIPES": LINEARIZED_PIPES,
         "MEASUREMENT_HEADS_EQUAL_ONLY": MEASUREMENT_HEADS_EQUAL_ONLY,
         "HEADLOSS_MODEL": HEADLOSS_MODEL,
         "HEADLOSS_MODEL_LOCAL": headloss_model_local,
@@ -545,8 +661,8 @@ def main() -> None:
         is_posteriori_mode = True
     elif mode in {"H_h", "C_h"}:
         mode = "C_h_fixed"
-    if mode not in {"W_d", "C_d", "W_h", "C_h_fixed"}:
-        raise ValueError("MODE must be one of: W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed.")
+    if mode not in {"W_d", "C_d", "W_h", "C_h_fixed", "B"}:
+        raise ValueError("MODE must be one of: W_d, W_d_M, C_d, W_h, W_h_M, C_h_fixed, B.")
     if method not in {"xd", "classical"}:
         raise ValueError("METHOD must be 'xd' or 'classical'.")
 
@@ -612,7 +728,7 @@ def main() -> None:
             _build_parameters_snapshot(measurement_nodes, len(sensor_sets), headloss_model_local, None),
         )
 
-        if not is_posteriori_mode and mode in {"W_d", "W_h"}:
+        if not is_posteriori_mode and mode in {"W_d", "W_h", "B"}:
             # A-priori W-modes must not condition on a fixed measurement instance.
             measurement_data = _build_measurement_dict(
                 measurement_nodes,
@@ -640,7 +756,7 @@ def main() -> None:
         measurement_heads_equal_only_local = bool(MEASUREMENT_HEADS_EQUAL_ONLY)
         if is_posteriori_mode and mode in {"W_d", "W_h"}:
             measurement_heads_equal_only_local = False
-        elif mode in {"W_d", "W_h"}:
+        elif mode in {"W_d", "W_h", "B"}:
             # A-priori W-modes must stay in equivalence-class form, not absolute head fitting.
             measurement_heads_equal_only_local = True
 
@@ -657,7 +773,7 @@ def main() -> None:
             base_heads,
             base_flows,
         )
-        if not is_posteriori_mode and mode in {"W_d", "W_h"}:
+        if not is_posteriori_mode and mode in {"W_d", "W_h", "B"}:
             center_state = None
         reference_demands_local = (
             center_state.get("demands", reference_demands) if center_state is not None else reference_demands
@@ -691,7 +807,7 @@ def main() -> None:
             solver_total_demand = float(total_demand_local) if total_demand_local is not None else None
         # A-priori W-modes should not condition on a concrete measurement M.
         # Use only the known extra-demand budget around base demand.
-        elif mode in {"W_d", "W_h"}:
+        elif mode in {"W_d", "W_h", "B"}:
             if extra_budget is not None and extra_budget >= 0.0:
                 solver_total_demand_upper = base_total + extra_budget
             else:
@@ -714,6 +830,81 @@ def main() -> None:
             heads=dict(base_heads),
             flows=dict(base_flows),
         )
+
+        linearization_payload = None
+        linearized_pipes: Dict[str, float] = {}
+        if mode == "W_d" and (LINEARIZATION_LOOKUP or LINEARIZATION_ENABLED):
+            selected_linearized_pipes: Dict[str, float] = {}
+            if LINEARIZATION_ENABLED and isinstance(LINEARIZED_PIPES, dict):
+                selected_linearized_pipes = {
+                    str(pid): float(qref)
+                    for pid, qref in LINEARIZED_PIPES.items()
+                }
+            if selected_linearized_pipes and not LINEARIZATION_LOOKUP:
+                linearized_pipes = dict(selected_linearized_pipes)
+                linearization_payload = {
+                    "linearized_pipes": dict(selected_linearized_pipes),
+                    "pipe_bounds": {},
+                }
+
+            linearization_path = os.path.join(output_dir, "linearization.json") if OUTPUT_DIR else ""
+            if linearization_payload is None and linearization_path and os.path.isfile(linearization_path):
+                try:
+                    linearization_payload = _read_json(linearization_path)
+                except Exception:
+                    linearization_payload = None
+            if linearization_payload is None and LINEARIZATION_ENABLED and isinstance(_RAW_CONFIG, dict):
+                lookup_config = dict(_RAW_CONFIG)
+                lookup_config["LINEARIZATION_LOOKUP"] = True
+                lookup_config["LINEARIZATION_ENABLED"] = False
+                lookup_hash = compute_hash(_sanitize_hash_payload(lookup_config))
+                lookup_output_dir = os.path.join("data", WDN, lookup_hash)
+                lookup_linearization_path = os.path.join(lookup_output_dir, "linearization.json")
+                if os.path.isfile(lookup_linearization_path):
+                    try:
+                        linearization_payload = _read_json(lookup_linearization_path)
+                    except Exception:
+                        linearization_payload = None
+            if linearization_payload is None:
+                linearization_payload = _linearization_certificate(
+                    network=network,
+                    pipe_resistances=pipe_res,
+                    base_flows=base_flows,
+                    base_heads=base_heads,
+                    sensor_heads=sensor_heads,
+                    measurement_nodes=list(measurement_nodes),
+                    measurement_heads_equal_only_local=measurement_heads_equal_only_local,
+                    reservoir_node=reservoir_node,
+                    reservoir_outflow=None,
+                    demand_lb=float(DEMAND_LB),
+                    demand_lb_per_node=demand_lb_per_node,
+                    total_demand=solver_total_demand,
+                    total_demand_upper=solver_total_demand_upper,
+                    initial_guess=base_guess,
+                    epsilon_h_scale=float(LINEARIZATION_EPS_SCALE),
+                )
+            default_linearized_pipes = {
+                str(pid): float(qref)
+                for pid, qref in linearization_payload.get("linearized_pipes", {}).items()
+            }
+            if not linearized_pipes:
+                linearized_pipes = selected_linearized_pipes if selected_linearized_pipes else default_linearized_pipes
+            _write_json(
+                os.path.join(output_dir, "linearization.json"),
+                {
+                    "WDN": WDN,
+                    "mode": mode,
+                    "measurement_nodes": list(measurement_nodes),
+                    "selected_linearized_pipes": linearized_pipes,
+                    **linearization_payload,
+                },
+            )
+            if LINEARIZATION_LOOKUP and not LINEARIZATION_ENABLED:
+                print(
+                    f"Linearization lookup complete: {len(linearized_pipes)} / {len(network.pipes)} pipes certified.",
+                    flush=True,
+                )
+                continue
 
         minimize_mode = mode in {"C_d", "C_h", "C_h_fixed"}
         best_value = float("inf") if minimize_mode else -float("inf")
@@ -803,6 +994,8 @@ def main() -> None:
                 solve_with_xd = False
             if not measurement_heads_equal_only_local:
                 solve_with_xd = False
+            if LINEARIZATION_ENABLED and mode == "W_d":
+                solve_with_xd = False
 
             if solve_with_xd:
                 fixed_b = reference_demands if mode == "C_d" else None
@@ -853,6 +1046,8 @@ def main() -> None:
                     total_demand_upper=solver_total_demand_upper,
                     measurement_nodes=measurement_nodes,
                     measurement_heads_equal_only=measurement_heads_equal_only_local,
+                    linearized_pipes=linearized_pipes if (LINEARIZATION_ENABLED and mode == "W_d") else None,
+                    objective_mode="bregman_energy" if mode == "B" else "demand_distance",
                     match_reservoir_outflow_between_pairs=match_total_between_pairs_local,
                     reference_demands=reference_demands_local,
                     restriction_mode=None,
@@ -958,6 +1153,7 @@ def main() -> None:
         demand_c = _center_mode_value("C_d", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
         head_w = _mode_value("W_h", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
         head_c = _center_mode_value("C_h", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
+        b_score = _mode_value("B", float(NORM), best_result, junctions, all_nodes, reference_demands_local, reference_heads_local)
 
         out_demands_a = dict(best_result.demands_a)
         out_demands_b = dict(best_result.demands_b)
@@ -1041,11 +1237,13 @@ def main() -> None:
                 "radius": best_value,
                 "mode": mode_raw,
                 "mode_effective": mode,
+                "objective_mode": "bregman_energy" if mode == "B" else "demand_distance",
                 "method": method,
                 "W_d": demand_w,
                 "C_d": demand_c,
                 "W_h": head_w,
                 "C_h": head_c,
+                "B": b_score,
                 "norm": float(NORM),
                 "p": len(measurement_nodes),
                 "success": bool(best_result.success),
@@ -1066,6 +1264,8 @@ def main() -> None:
                 "dms_upper_bound": float(dms_upper_bound),
                 "measurement_source": MEASUREMENT_SOURCE,
                 "measurement_data": measurement_data,
+                "linearization_enabled": bool(LINEARIZATION_ENABLED),
+                "linearized_pipes": linearized_pipes,
                 "reference_demands": reference_demands_local,
                 "center_side": center_side,
                 "center_symbol": center_symbol,
@@ -1073,7 +1273,7 @@ def main() -> None:
         )
 
         measurement_candidates = []
-        if mode in {"W_d", "W_h"}:
+        if mode in {"W_d", "W_h", "B"}:
             measurement_candidates = [
                 {
                     "label": "a",

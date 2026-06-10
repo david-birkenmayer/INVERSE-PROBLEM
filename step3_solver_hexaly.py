@@ -40,7 +40,20 @@ def _estimate_flow_bounds(
         for p in pipes:
             scale = max(scale, abs(float(initial_guess.flows.get(p, 0.0))))
     bound = max(1.0, 10.0 * scale)
-    return {p: (-bound, bound) for p in pipes}
+    bounds = {p: (-bound, bound) for p in pipes}
+    if c_bounds is not None:
+        for p in pipes:
+            if p in c_bounds:
+                bounds[p] = (float(c_bounds[p]), bounds[p][1])
+    if C_bounds is not None:
+        for p in pipes:
+            if p in C_bounds:
+                bounds[p] = (bounds[p][0], float(C_bounds[p]))
+    return bounds
+
+
+def _linearized_headloss(r_e: float, q_ref: float, q_var) -> object:
+    return 2.0 * r_e * abs(q_ref) * q_var - r_e * q_ref * abs(q_ref)
 
 
 def _estimate_head_bounds(
@@ -145,6 +158,7 @@ def solve_max_demand_distance_hexaly(
     total_demand_upper: Optional[float] = None,
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = False,
+    linearized_pipes: Optional[Dict[str, float]] = None,
     match_reservoir_outflow_between_pairs: bool = False,
     reference_demands: Optional[Dict[str, float]] = None,
     restriction_mode: Optional[str] = None,
@@ -158,6 +172,7 @@ def solve_max_demand_distance_hexaly(
     stagnation_eps: float = 1e-6,
     head_margin: float = 50.0,
     use_path_head_bounds: bool = True,
+    objective_mode: str = "demand_distance",
 ) -> DemandDistanceResult:
     _require_hexaly()
     import hexaly.optimizer as hx
@@ -166,6 +181,7 @@ def solve_max_demand_distance_hexaly(
         hx.version.license_path = license_path
 
     reservoir_nodes = set(network.reservoirs.keys())
+    linearized_pipes = dict(linearized_pipes or {})
     fixed_heads = dict(sensor_heads)
     measurement_set = set(measurement_nodes or [])
     if measurement_heads_equal_only:
@@ -210,8 +226,13 @@ def solve_max_demand_distance_hexaly(
             hu_b = h_u if h_u is not None else hB[pipe.start_node]
             hv_b = h_v if h_v is not None else hB[pipe.end_node]
 
-            m.constraint(hu_a - hv_a == r_e * m.abs(qA[pipe_id]) * qA[pipe_id])
-            m.constraint(hu_b - hv_b == r_e * m.abs(qB[pipe_id]) * qB[pipe_id])
+            if pipe_id in linearized_pipes:
+                q_ref = float(linearized_pipes[pipe_id])
+                m.constraint(hu_a - hv_a == _linearized_headloss(r_e, q_ref, qA[pipe_id]))
+                m.constraint(hu_b - hv_b == _linearized_headloss(r_e, q_ref, qB[pipe_id]))
+            else:
+                m.constraint(hu_a - hv_a == r_e * m.abs(qA[pipe_id]) * qA[pipe_id])
+                m.constraint(hu_b - hv_b == r_e * m.abs(qB[pipe_id]) * qB[pipe_id])
 
         for node_id, head_val in fixed_heads.items():
             if node_id in junctions:
@@ -332,19 +353,31 @@ def solve_max_demand_distance_hexaly(
                 sign = 1.0 if ref_val >= 0.0 else -1.0
                 m.constraint(sign * qA[ref_pipe] >= 0.0)
 
-        if math.isinf(norm_p):
-            t_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0
-            t = m.float(0.0, 10.0 * t_ub)
-            for j in junctions:
-                m.constraint(t >= m.abs(dA[j] - dB[j]))
-            obj_expr = t
-            m.maximize(obj_expr)
-        else:
-            if norm_p <= 0:
-                raise ValueError("norm_p must be positive.")
-            terms = [m.pow(m.abs(dA[j] - dB[j]), float(norm_p)) for j in junctions]
+        if objective_mode == "bregman_energy":
+            terms = []
+            for p in pipes:
+                pipe = network.pipes[p]
+                x_a = _head_value(pipe.start_node, hA, fixed_heads) - _head_value(pipe.end_node, hA, fixed_heads)
+                x_b = _head_value(pipe.start_node, hB, fixed_heads) - _head_value(pipe.end_node, hB, fixed_heads)
+                terms.append((x_a - x_b) * (qA[p] - qB[p]))
             obj_expr = _sum_expr(m, terms)
             m.maximize(obj_expr)
+        elif objective_mode == "demand_distance":
+            if math.isinf(norm_p):
+                t_ub = max(abs(flow_bounds[p][1]) for p in pipes) if pipes else 1.0
+                t = m.float(0.0, 10.0 * t_ub)
+                for j in junctions:
+                    m.constraint(t >= m.abs(dA[j] - dB[j]))
+                obj_expr = t
+                m.maximize(obj_expr)
+            else:
+                if norm_p <= 0:
+                    raise ValueError("norm_p must be positive.")
+                terms = [m.pow(m.abs(dA[j] - dB[j]), float(norm_p)) for j in junctions]
+                obj_expr = _sum_expr(m, terms)
+                m.maximize(obj_expr)
+        else:
+            raise ValueError("objective_mode must be 'demand_distance' or 'bregman_energy'.")
 
         m.close()
 
@@ -401,7 +434,14 @@ def solve_max_demand_distance_hexaly(
             q_e = q[p]
             h_u = _head_value(pipe.start_node, h, fixed_heads)
             h_v = _head_value(pipe.end_node, h, fixed_heads)
-            max_violation = max(max_violation, abs(h_u - h_v - r_e * abs(q_e) * q_e))
+            if p in linearized_pipes:
+                q_ref = float(linearized_pipes[p])
+                max_violation = max(
+                    max_violation,
+                    abs(h_u - h_v - (2.0 * r_e * abs(q_ref) * q_e - r_e * q_ref * abs(q_ref))),
+                )
+            else:
+                max_violation = max(max_violation, abs(h_u - h_v - r_e * abs(q_e) * q_e))
 
     for node_id, head_val in fixed_heads.items():
         if node_id in h_a:
@@ -437,7 +477,16 @@ def solve_max_demand_distance_hexaly(
             v - (float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb))
             for j, v in all_d
         )
-    objective_val = _compute_objective_value(d_a, d_b, norm_p)
+    if objective_mode == "bregman_energy":
+        objective_val = 0.0
+        for p in pipes:
+            pipe = network.pipes[p]
+            x_a = _head_value(pipe.start_node, h_a, fixed_heads) - _head_value(pipe.end_node, h_a, fixed_heads)
+            x_b = _head_value(pipe.start_node, h_b, fixed_heads) - _head_value(pipe.end_node, h_b, fixed_heads)
+            objective_val += (x_a - x_b) * (q_a[p] - q_b[p])
+        objective_val = float(objective_val)
+    else:
+        objective_val = _compute_objective_value(d_a, d_b, norm_p)
     status_msg = str(status)
 
     return DemandDistanceResult(

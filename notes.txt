@@ -7,3 +7,37 @@ for dirichlet:
 (Changed 14 to 13)
 
 How can I run the data files?
+
+
+
+Evaluating ['12', '2', '25']...
+> Improvement found after 10 starts
+Evaluating ['12', '2', '24']...
+> Improvement found after 8 starts
+> Radius: 7.588225 -> 7.583472
+Evaluating ['12', '2', '26']...
+> Improvement ruled out after 2 starts
+Evaluating ['12', '2', '32']...
+> Improvement found after 3 starts
+> Radius: 7.588225 -> 6.507200
+Evaluating ['11', '2', '25']...
+> Improvement ruled out after 8 starts
+Evaluating ['13', '2', '25']...
+> Improvement found after 4 starts
+> Radius: 7.588225 -> 7.058564
+Evaluating ['12', '25', '3']...
+> Improvement found after 3 starts
+> Radius: 7.588225 -> 7.090847
+Evaluating ['12', '2', '31']...
+> Improvement ruled out after 1 starts
+Evaluating ['11', '2', '32']...
+> Improvement ruled out after 1 starts
+Evaluating ['13', '2', '32']...
+> Improvement ruled out after 2 starts
+Evaluating ['12', '3', '32']...
+> Improvement ruled out after 1 starts
+Done.
+> Local optimum found after 11 evaluations
+> 1 improvements
+> 0 discarded
+> Optimum is ['12', '2', '32'] with radius 6.507200

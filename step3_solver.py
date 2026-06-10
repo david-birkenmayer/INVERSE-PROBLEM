@@ -46,6 +46,19 @@ class FeasibilityResult:
 
 
 @dataclass(frozen=True)
+class PipeFlowBoundsResult:
+    pipe_id: str
+    q_min: float
+    q_max: float
+    min_success: bool
+    max_success: bool
+    min_violation: float
+    max_violation: float
+    min_demand_viol: float
+    max_demand_viol: float
+
+
+@dataclass(frozen=True)
 class DemandDistanceResult:
     demands_a: Dict[str, float]
     demands_b: Dict[str, float]
@@ -495,6 +508,214 @@ def solve_single_node_min(
     )
 
 
+def solve_single_pipe_bounds(
+    network: NetworkData,
+    target_pipe: str,
+    sensor_heads: Dict[str, float],
+    pipe_primary: Iterable[str],
+    pipe_secondary: Iterable[str],
+    c_secondary: Dict[str, float],
+    C_primary: Dict[str, float],
+    pipe_resistances: Dict[str, float],
+    preferred_flow_sign: Optional[Dict[str, float]] = None,
+    energy_head: Optional[float] = None,
+    reservoir_node: Optional[str] = None,
+    reservoir_outflow: Optional[float] = None,
+    total_demand: Optional[float] = None,
+    total_demand_upper: Optional[float] = None,
+    demand_lb_per_node: Optional[Dict[str, float]] = None,
+    demand_lb: float = 0.0,
+    c_bounds: Optional[Dict[str, float]] = None,
+    C_bounds: Optional[Dict[str, float]] = None,
+    initial_guess: Optional[SolverResult] = None,
+    measurement_nodes: Optional[Iterable[str]] = None,
+    measurement_heads_equal_only: bool = False,
+) -> PipeFlowBoundsResult:
+    _require_scipy()
+    from scipy.optimize import Bounds, NonlinearConstraint, minimize
+
+    reservoir_nodes = set(network.reservoirs.keys())
+    fixed_heads = dict(sensor_heads)
+    measurement_set = set(measurement_nodes or [])
+    if measurement_heads_equal_only:
+        fixed_heads = {k: v for k, v in fixed_heads.items() if k not in measurement_set}
+    for res_id, res_node in network.reservoirs.items():
+        if res_id not in fixed_heads:
+            fixed_heads[res_id] = res_node.elevation_m
+
+    junctions, pipes = _build_index_maps(network, reservoir_nodes)
+    if target_pipe not in pipes:
+        raise ValueError("target_pipe must be a pipe id in the network")
+
+    n_q = len(pipes)
+    n_h = len(junctions)
+    n_vars = n_q + n_h
+
+    lower = np.full(n_vars, -np.inf, dtype=float)
+    upper = np.full(n_vars, np.inf, dtype=float)
+
+    if c_bounds is not None and C_bounds is not None:
+        for i, pipe_id in enumerate(pipes):
+            lower[i] = c_bounds.get(pipe_id, -np.inf)
+            upper[i] = C_bounds.get(pipe_id, np.inf)
+    else:
+        pipe_primary_set = set(pipe_primary)
+        pipe_secondary_set = set(pipe_secondary)
+        for i, pipe_id in enumerate(pipes):
+            if pipe_id in pipe_primary_set:
+                C_e = C_primary[pipe_id]
+                sign = 1.0
+                if preferred_flow_sign is not None and pipe_id in preferred_flow_sign:
+                    sign = 1.0 if preferred_flow_sign[pipe_id] >= 0 else -1.0
+                if sign >= 0:
+                    lower[i] = C_e
+                else:
+                    upper[i] = -C_e
+            elif pipe_id in pipe_secondary_set:
+                c_e = c_secondary[pipe_id]
+                lower[i] = -c_e
+                upper[i] = c_e
+
+    bounds = Bounds(lower, upper)
+
+    def constraints_fun(x: np.ndarray) -> np.ndarray:
+        return _constraints_residuals(x, junctions, pipes, network, fixed_heads, pipe_resistances)
+
+    n_constraints = n_q + sum(1 for n in fixed_heads if n in junctions)
+    constraints = NonlinearConstraint(constraints_fun, lb=np.zeros(n_constraints), ub=np.zeros(n_constraints))
+
+    def demand_from_q(q: np.ndarray) -> Dict[str, float]:
+        inflow = {j: 0.0 for j in junctions}
+        outflow = {j: 0.0 for j in junctions}
+        for idx, pipe_id in enumerate(pipes):
+            pipe = network.pipes[pipe_id]
+            q_e = q[idx]
+            if pipe.end_node in inflow:
+                inflow[pipe.end_node] += q_e
+            if pipe.start_node in outflow:
+                outflow[pipe.start_node] += q_e
+        return {j: inflow[j] - outflow[j] for j in junctions}
+
+    def demand_ineq_fun(x: np.ndarray) -> np.ndarray:
+        q = x[:n_q]
+        d = demand_from_q(q)
+        return np.array([d[j] for j in junctions], dtype=float)
+
+    demand_lower = np.array(
+        [float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb) for j in junctions],
+        dtype=float,
+    )
+    demand_ineq = NonlinearConstraint(demand_ineq_fun, lb=demand_lower, ub=np.full(n_h, np.inf))
+
+    total_demand_constraint = None
+    if total_demand is not None:
+        def total_demand_fun(x: np.ndarray) -> np.ndarray:
+            q = x[:n_q]
+            d = demand_from_q(q)
+            return np.array([sum(d.values())], dtype=float)
+
+        total_demand_constraint = NonlinearConstraint(total_demand_fun, lb=np.array([float(total_demand)]), ub=np.array([float(total_demand)]))
+    elif total_demand_upper is not None:
+        def total_demand_fun(x: np.ndarray) -> np.ndarray:
+            q = x[:n_q]
+            d = demand_from_q(q)
+            return np.array([sum(d.values())], dtype=float)
+
+        total_demand_constraint = NonlinearConstraint(total_demand_fun, lb=np.array([-np.inf]), ub=np.array([float(total_demand_upper)]))
+
+    energy_constraint = None
+    if energy_head is not None:
+        def energy_fun(x: np.ndarray) -> np.ndarray:
+            q = x[:n_q]
+            d = demand_from_q(q)
+            total_demand = sum(d.values())
+            energy = 0.0
+            for idx, pipe_id in enumerate(pipes):
+                q_e = q[idx]
+                energy += pipe_resistances[pipe_id] * abs(q_e) ** 3
+            return np.array([energy - energy_head * total_demand], dtype=float)
+
+        energy_constraint = NonlinearConstraint(energy_fun, lb=-np.inf, ub=0.0)
+
+    reservoir_constraint = None
+    if reservoir_node is not None and reservoir_outflow is not None:
+        def reservoir_fun(x: np.ndarray) -> np.ndarray:
+            q = x[:n_q]
+            net = 0.0
+            for idx, pipe_id in enumerate(pipes):
+                pipe = network.pipes[pipe_id]
+                q_e = q[idx]
+                if pipe.start_node == reservoir_node:
+                    net += q_e
+                if pipe.end_node == reservoir_node:
+                    net -= q_e
+            return np.array([net - reservoir_outflow], dtype=float)
+
+        reservoir_constraint = NonlinearConstraint(reservoir_fun, lb=0.0, ub=0.0)
+
+    if initial_guess is None:
+        x0 = np.zeros(n_vars, dtype=float)
+    else:
+        q0 = np.array([initial_guess.flows.get(pid, 0.0) for pid in pipes], dtype=float)
+        h0 = np.array([initial_guess.heads.get(j, 0.0) for j in junctions], dtype=float)
+        x0 = np.concatenate([q0, h0])
+
+    target_idx = pipes.index(target_pipe)
+
+    def obj_min(x: np.ndarray) -> float:
+        return float(x[target_idx])
+
+    def obj_max(x: np.ndarray) -> float:
+        return float(-x[target_idx])
+
+    constraint_list = [constraints, demand_ineq]
+    if total_demand_constraint is not None:
+        constraint_list.append(total_demand_constraint)
+    if energy_constraint is not None:
+        constraint_list.append(energy_constraint)
+    if reservoir_constraint is not None:
+        constraint_list.append(reservoir_constraint)
+
+    res_min = minimize(
+        obj_min,
+        x0,
+        method="trust-constr",
+        constraints=constraint_list,
+        bounds=bounds,
+        options={"maxiter": 2000, "verbose": 0},
+    )
+    res_max = minimize(
+        obj_max,
+        x0,
+        method="trust-constr",
+        constraints=constraint_list,
+        bounds=bounds,
+        options={"maxiter": 2000, "verbose": 0},
+    )
+
+    q_min = float(res_min.x[target_idx])
+    q_max = float(res_max.x[target_idx])
+    if q_min > q_max:
+        q_min, q_max = q_max, q_min
+
+    min_violation = float(np.max(np.abs(constraints_fun(res_min.x))))
+    max_violation = float(np.max(np.abs(constraints_fun(res_max.x))))
+    min_demand_viol = float(np.min(demand_ineq_fun(res_min.x)))
+    max_demand_viol = float(np.min(demand_ineq_fun(res_max.x)))
+
+    return PipeFlowBoundsResult(
+        pipe_id=target_pipe,
+        q_min=q_min,
+        q_max=q_max,
+        min_success=bool(res_min.success),
+        max_success=bool(res_max.success),
+        min_violation=min_violation,
+        max_violation=max_violation,
+        min_demand_viol=min_demand_viol,
+        max_demand_viol=max_demand_viol,
+    )
+
+
 def solve_feasibility(
     network: NetworkData,
     sensor_heads: Dict[str, float],
@@ -661,6 +882,7 @@ def solve_max_demand_distance(
     pipe_resistances: Dict[str, float],
     measurement_nodes: Optional[Iterable[str]] = None,
     measurement_heads_equal_only: bool = False,
+    linearized_pipes: Optional[Dict[str, float]] = None,
     c_bounds: Optional[Dict[str, float]] = None,
     C_bounds: Optional[Dict[str, float]] = None,
     reservoir_node: Optional[str] = None,
@@ -668,10 +890,14 @@ def solve_max_demand_distance(
     initial_guess: Optional[SolverResult] = None,
     norm_p: float = 2.0,
     demand_lb: float = 0.0,
+    demand_lb_per_node: Optional[Dict[str, float]] = None,
     total_demand: Optional[float] = None,
+    total_demand_upper: Optional[float] = None,
 ) -> DemandDistanceResult:
     _require_scipy()
     from scipy.optimize import Bounds, NonlinearConstraint, minimize
+
+    linearized_pipes = dict(linearized_pipes or {})
 
     reservoir_nodes = set(network.reservoirs.keys())
     fixed_heads = dict(sensor_heads)
@@ -725,7 +951,11 @@ def solve_max_demand_distance(
             q_e = q_a[idx]
             h_u = _head_value(pipe.start_node, h_a, fixed_heads)
             h_v = _head_value(pipe.end_node, h_a, fixed_heads)
-            residuals.append(h_u - h_v - r_e * abs(q_e) * q_e)
+            if pipe_id in linearized_pipes:
+                q_ref = float(linearized_pipes[pipe_id])
+                residuals.append(h_u - h_v - (2.0 * r_e * abs(q_ref) * q_e - r_e * q_ref * abs(q_ref)))
+            else:
+                residuals.append(h_u - h_v - r_e * abs(q_e) * q_e)
 
         for idx, pipe_id in enumerate(pipes):
             pipe = network.pipes[pipe_id]
@@ -733,7 +963,11 @@ def solve_max_demand_distance(
             q_e = q_b[idx]
             h_u = _head_value(pipe.start_node, h_b, fixed_heads)
             h_v = _head_value(pipe.end_node, h_b, fixed_heads)
-            residuals.append(h_u - h_v - r_e * abs(q_e) * q_e)
+            if pipe_id in linearized_pipes:
+                q_ref = float(linearized_pipes[pipe_id])
+                residuals.append(h_u - h_v - (2.0 * r_e * abs(q_ref) * q_e - r_e * q_ref * abs(q_ref)))
+            else:
+                residuals.append(h_u - h_v - r_e * abs(q_e) * q_e)
 
         for node_id, head_val in fixed_heads.items():
             if node_id in junctions:
@@ -761,9 +995,47 @@ def solve_max_demand_distance(
 
     demand_ineq = NonlinearConstraint(
         demand_ineq_fun,
-        lb=np.full(2 * n_h, demand_lb),
+        lb=np.array(
+            [
+                float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb)
+                for j in junctions
+            ]
+            + [
+                float(demand_lb_per_node[j]) if demand_lb_per_node and j in demand_lb_per_node else float(demand_lb)
+                for j in junctions
+            ],
+            dtype=float,
+        ),
         ub=np.full(2 * n_h, np.inf),
     )
+
+    total_demand_constraint = None
+    if total_demand is not None:
+        def total_demand_fun(x: np.ndarray) -> np.ndarray:
+            q_a = x[:n_q]
+            q_b = x[n_q + n_h : 2 * n_q + n_h]
+            d_a = demand_from_q(q_a)
+            d_b = demand_from_q(q_b)
+            return np.array([sum(d_a.values()), sum(d_b.values())], dtype=float)
+
+        total_demand_constraint = NonlinearConstraint(
+            total_demand_fun,
+            lb=np.array([float(total_demand), float(total_demand)]),
+            ub=np.array([float(total_demand), float(total_demand)]),
+        )
+    elif total_demand_upper is not None:
+        def total_demand_fun(x: np.ndarray) -> np.ndarray:
+            q_a = x[:n_q]
+            q_b = x[n_q + n_h : 2 * n_q + n_h]
+            d_a = demand_from_q(q_a)
+            d_b = demand_from_q(q_b)
+            return np.array([sum(d_a.values()), sum(d_b.values())], dtype=float)
+
+        total_demand_constraint = NonlinearConstraint(
+            total_demand_fun,
+            lb=np.array([-np.inf, -np.inf]),
+            ub=np.array([float(total_demand_upper), float(total_demand_upper)]),
+        )
 
     reservoir_constraint = None
     if reservoir_node is not None and reservoir_outflow is not None:
@@ -827,6 +1099,8 @@ def solve_max_demand_distance(
         return -float(np.sum(np.abs(diffs) ** norm_p))
 
     constraint_list = [constraints, demand_ineq]
+    if total_demand_constraint is not None:
+        constraint_list.append(total_demand_constraint)
     if reservoir_constraint is not None:
         constraint_list.append(reservoir_constraint)
     if sign_constraint is not None:

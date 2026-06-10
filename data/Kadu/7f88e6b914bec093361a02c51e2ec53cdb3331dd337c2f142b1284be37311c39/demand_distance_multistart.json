@@ -1,0 +1,15 @@
+{
+  "best_mode_value": 30.071533726602855,
+  "method": "xd",
+  "mode": "B",
+  "runs": [
+    {
+      "center_success": null,
+      "max_violation": 6.252776074688882e-13,
+      "min_demand_viol": 2.893483230792526e-10,
+      "mode_value": 30.071533726602855,
+      "run": 0,
+      "success": true
+    }
+  ]
+}
