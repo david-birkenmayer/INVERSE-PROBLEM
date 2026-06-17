@@ -1,0 +1,14 @@
+{
+  "entries": {
+    "base": {
+      "file": "base.json",
+      "hash": "8660646211fc3ae114d1c45a3e1a97c93f995e6ca1b60dd97b0dbe22b9bc782b"
+    },
+    "custom-20260617-135041": {
+      "file": "custom-20260617-135041.json",
+      "hash": "9e4f73e359183001e703899ba0429790c8ed67e44cfab2983029b1278da808d0"
+    }
+  },
+  "updated_at": "20260617-135057",
+  "wdn": "BAK"
+}

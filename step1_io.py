@@ -74,7 +74,9 @@ def load_inp_network(file_path: str) -> NetworkData:
             junctions[name] = n
             nodes[name] = n
         elif node.node_type == "Reservoir":
-            head_value = node.head if node.head is not None else getattr(node, "elevation", None)
+            head_value = getattr(node, "base_head", None)
+            if head_value is None:
+                head_value = node.head if node.head is not None else getattr(node, "elevation", None)
             head_value = 0.0 if head_value is None else float(head_value)
             n = NodeData(name, head_value, 0.0, "reservoir", coords)
             reservoirs[name] = n

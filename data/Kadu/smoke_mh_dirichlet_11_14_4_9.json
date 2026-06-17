@@ -1,0 +1,30 @@
+{
+  "scenario_file": "/home/birkenma/Dokumente/INVERSE-PROBLEM/scenario/Kadu/dirichlet.json",
+  "sensor_nodes": [
+    "11",
+    "14",
+    "4",
+    "9"
+  ],
+  "elimination_node": "3",
+  "config_override": {
+    "demand_lb_tolerance": 1.0,
+    "use_square_reduced_jacobian": false
+  },
+  "num_samples": 120,
+  "acceptance_rate": 0.3,
+  "infeasible_rate": 0.0,
+  "proposal_std_final": 0.045838259761145084,
+  "min_ess": 2.7135591382148325,
+  "median_ess": 4.850114745274216,
+  "diagnostics": {
+    "acceptance_rate": 0.3,
+    "infeasible_rate": 0.0,
+    "proposal_std_final": 0.045838259761145084,
+    "mean_log_target": -45.00060409047846,
+    "std_log_target": 2.3180577010036423,
+    "target_extra": 1.1102230246251565e-16,
+    "base_total": 0.294,
+    "measured_total_demand": 0.2940000000000001
+  }
+}

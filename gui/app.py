@@ -3,6 +3,9 @@ import os
 import re
 import hashlib
 import math
+from datetime import datetime
+import runpy
+import traceback
 import shutil
 import subprocess
 import sys
@@ -15,6 +18,7 @@ from typing import Dict, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.backend_bases import MouseButton
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -909,6 +913,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 
 class NetworkPlot(QtWidgets.QWidget):
 	measurement_changed = QtCore.pyqtSignal(list)
+	node_right_clicked = QtCore.pyqtSignal(str)
 
 	def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
 		super().__init__(parent)
@@ -927,6 +932,12 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._pipe_classes: Optional[Dict[str, Dict[str, float]]] = None
 		self._linearized_pipes: Dict[str, float] = {}
 		self._linearization_scale_needed: Dict[str, float] = {}
+		self._display_demands: Dict[str, float] = {}
+		self._display_base_demands: Dict[str, float] = {}
+		self._allow_measurement_edit = True
+		self._highlight_node: Optional[str] = None
+		self._node_mae: Dict[str, float] = {}
+		self._mae_max: float = 1.0
 		self._init_ui()
 
 	def _init_ui(self) -> None:
@@ -946,6 +957,11 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._pipe_classes = None
 		self._linearized_pipes = {}
 		self._linearization_scale_needed = {}
+		self._display_demands = {}
+		self._display_base_demands = {}
+		self._highlight_node = None
+		self._node_mae = {}
+		self._mae_max = 1.0
 
 		inp_path = f"./wdn/{wdn_name}.inp"
 		network = load_inp_network(inp_path)
@@ -992,6 +1008,40 @@ class NetworkPlot(QtWidgets.QWidget):
 
 	def set_show_sensors_mode(self, enabled: bool) -> None:
 		self._show_sensors_mode = bool(enabled)
+		self._redraw()
+
+	def set_measurement_editable(self, editable: bool) -> None:
+		self._allow_measurement_edit = bool(editable)
+
+	def set_demands_overlay(self, base_demands: Dict[str, float], current_demands: Dict[str, float]) -> None:
+		self._display_base_demands = {str(k): float(v) for k, v in base_demands.items()}
+		self._display_demands = {str(k): float(v) for k, v in current_demands.items()}
+		self._redraw()
+
+	def clear_demands_overlay(self) -> None:
+		self._display_base_demands = {}
+		self._display_demands = {}
+		self._redraw()
+
+	def set_node_mae(self, mae: Dict[str, float], max_value: float) -> None:
+		self._node_mae = {str(k): float(v) for k, v in mae.items()}
+		self._mae_max = max(float(max_value), 1e-9)
+		self._redraw()
+
+	def clear_node_mae(self) -> None:
+		self._node_mae = {}
+		self._mae_max = 1.0
+		self._redraw()
+
+	def _mae_to_color(self, mae: float) -> str:
+		t = min(1.0, max(0.0, mae / self._mae_max))
+		r = int(round(39 + t * 192))   # #27ae60 → #e74c3c
+		g = int(round(174 - t * 98))
+		b = int(round(96 - t * 36))
+		return f"#{r:02x}{g:02x}{b:02x}"
+
+	def set_highlight_node(self, node_id: Optional[str]) -> None:
+		self._highlight_node = str(node_id) if node_id else None
 		self._redraw()
 
 	def set_local_search_highlight(self, current_nodes: List[str], swap_out: Optional[str] = None, swap_in: Optional[str] = None) -> None:
@@ -1063,7 +1113,18 @@ class NetworkPlot(QtWidgets.QWidget):
 			ys = [self._node_pos[n][1] for n in nodes]
 			self.ax.scatter(xs, ys, s=size, marker=marker, c=color, edgecolors=edge, alpha=alpha, zorder=2)
 
-		if self._show_sensors_mode:
+		if self._node_mae:
+			for nodes_grp, edge, lw in [
+				([n for n in junctions if n in self._measurement_set], "#1a365d", 2.0),
+				([n for n in junctions if n not in self._measurement_set], "#555555", 0.5),
+			]:
+				if nodes_grp:
+					xs = [self._node_pos[n][0] for n in nodes_grp]
+					ys = [self._node_pos[n][1] for n in nodes_grp]
+					colors = [self._mae_to_color(self._node_mae.get(n, 0.0)) for n in nodes_grp]
+					self.ax.scatter(xs, ys, s=110.0, marker="o", c=colors, edgecolors=edge, linewidths=lw, zorder=2)
+			_scatter(reservoirs, "s", "#a0aec0", "#4a5568", size=110.0)
+		elif self._show_sensors_mode:
 			_scatter(others, "o", "#e2e8f0", "#94a3b8", size=70.0, alpha=0.45)
 			_scatter(measurements, "h", "#ffdd57", "#8a5a00", size=190.0, alpha=1.0)
 			_scatter(reservoirs, "s", "#90cdf4", "#1a365d", size=135.0, alpha=0.95)
@@ -1071,6 +1132,10 @@ class NetworkPlot(QtWidgets.QWidget):
 			_scatter(others, "o", "#f2f2f2", "#333333")
 			_scatter(measurements, "h", "#90cdf4", "#1a365d")
 			_scatter(reservoirs, "s", "#90cdf4", "#1a365d")
+
+		if self._highlight_node and self._highlight_node in self._node_pos and self._highlight_node not in self._reservoir_set and not self._node_mae:
+			xh, yh = self._node_pos[self._highlight_node]
+			self.ax.scatter([xh], [yh], s=250.0, marker="o", c="#48bb78", edgecolors="#22543d", linewidths=1.6, zorder=2.8)
 
 		# Local-search overlay:
 		# - current best nodes: blue hexagons
@@ -1090,6 +1155,10 @@ class NetworkPlot(QtWidgets.QWidget):
 			if swap_in is not None:
 				_scatter([swap_in], "h", "#ff6b6b", "#7f1d1d", size=260.0, alpha=1.0)
 
+		xs_all = [p[0] for p in self._node_pos.values()]
+		ys_all = [p[1] for p in self._node_pos.values()]
+		y_offset = 0.03 * max((max(ys_all) - min(ys_all)) if ys_all else 1.0, (max(xs_all) - min(xs_all)) if xs_all else 1.0, 1.0)
+
 		for node_id in self._node_ids:
 			pos = self._node_pos.get(node_id)
 			if pos is None:
@@ -1100,6 +1169,16 @@ class NetworkPlot(QtWidgets.QWidget):
 			if self._show_sensors_mode and node_id in self._measurement_set:
 				label = f"{label} (S)"
 			self.ax.text(pos[0], pos[1], label, fontsize=7, ha="center", va="center", color="#111111", zorder=3)
+			text_lines: List[str] = []
+			if node_id in self._display_demands:
+				base_val = float(self._display_base_demands.get(node_id, 0.0))
+				cur_val = float(self._display_demands.get(node_id, 0.0))
+				delta_val = cur_val - base_val
+				text_lines.append(f"d={cur_val:.4f}  Δ={delta_val:.4f}")
+			if node_id in self._node_mae:
+				text_lines.append(f"MAE={self._node_mae[node_id]:.4f}")
+			if text_lines:
+				self.ax.text(pos[0], pos[1] - y_offset, "\n".join(text_lines), fontsize=6.5, ha="center", va="top", color="#1f2937", zorder=3)
 
 		if self._pipe_classes:
 			base_flows = self._pipe_classes.get("base_flows", {})
@@ -1121,6 +1200,8 @@ class NetworkPlot(QtWidgets.QWidget):
 		wdn_name = title_override if title_override else "Network"
 		if self._show_sensors_mode:
 			wdn_name = f"{wdn_name} | sensors: {len(measurements)}"
+		if self._node_mae:
+			wdn_name = f"{wdn_name} | MAE  green=0 … red={self._mae_max:.4f}"
 		self.ax.set_title(wdn_name)
 		self.ax.axis("off")
 		self.canvas.draw_idle()
@@ -1157,6 +1238,13 @@ class NetworkPlot(QtWidgets.QWidget):
 		range_y = max(ys) - min(ys)
 		threshold = 0.02 * max(range_x, range_y, 1.0)
 		if min_dist is None or min_dist > threshold * threshold:
+			return
+
+		if event.button == MouseButton.RIGHT:
+			self.node_right_clicked.emit(str(closest))
+			return
+
+		if not self._allow_measurement_edit:
 			return
 
 		if closest in self._measurement_set:
@@ -1671,6 +1759,15 @@ class MainWindow(QtWidgets.QMainWindow):
 		super().__init__()
 		self.setWindowTitle("Inverse Problem GUI")
 		self.solver_params = SolverParams()
+		self._post_updating_measurement_text = False
+		self._post_base_demands: Dict[str, float] = {}
+		self._post_current_demands: Dict[str, float] = {}
+		self._post_active_scenario_name: str = ""
+		self._post_active_scenario_path: str = ""
+		self._post_loaded_heads: Dict[str, float] = {}
+		self._post_loaded_flows: Dict[str, float] = {}
+		self._post_dirty: bool = False
+		self._post_last_saved_name: str = ""
 		self._measurement_value: object = []
 		self._measurement_valid = True
 		self._measurement_data_valid = True
@@ -1739,6 +1836,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.tabs = QtWidgets.QTabWidget()
 		left_layout.addWidget(self.tabs)
 		self._build_solver_tab()
+		self._build_posteriori_tab()
 
 		splitter.addWidget(left)
 		self._build_local_search_tab()
@@ -1746,6 +1844,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.tabs.currentChanged.connect(self._on_tab_changed)
 		self.plot = NetworkPlot()
 		self.plot.measurement_changed.connect(self._measurement_updated)
+		self.plot.node_right_clicked.connect(self._posteriori_node_right_clicked)
 		splitter.addWidget(self.plot)
 		self._apply_show_sensors_mode(self.show_sensors_mode.isChecked())
 		splitter.setStretchFactor(1, 1)
@@ -1878,6 +1977,105 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._linearization_lookup_active = False
 		self._linearization_auto_solve_pending = False
 		self._update_linearization_controls()
+
+	def _build_posteriori_tab(self) -> None:
+		scroll = QtWidgets.QScrollArea()
+		scroll.setWidgetResizable(True)
+		container = QtWidgets.QWidget()
+		scroll.setWidget(container)
+		outer = QtWidgets.QVBoxLayout(container)
+		outer.setContentsMargins(4, 4, 4, 4)
+
+		scenario_group = QtWidgets.QGroupBox("Scenario Choice")
+		scenario_form = QtWidgets.QFormLayout(scenario_group)
+
+		scenario_row = QtWidgets.QHBoxLayout()
+		self.post_scenario_combo = QtWidgets.QComboBox()
+		self.post_scenario_combo.currentIndexChanged.connect(self._posteriori_scenario_changed)
+		scenario_row.addWidget(self.post_scenario_combo)
+		self.post_refresh_scenarios_btn = QtWidgets.QPushButton("Refresh")
+		self.post_refresh_scenarios_btn.clicked.connect(lambda: self._posteriori_refresh_scenario_list(select_name=self.post_scenario_combo.currentText().strip()))
+		scenario_row.addWidget(self.post_refresh_scenarios_btn)
+		scenario_form.addRow("Scenario", scenario_row)
+
+		self.post_scenario_editable = QtWidgets.QCheckBox()
+		self.post_scenario_editable.setChecked(True)
+		self.post_scenario_editable.toggled.connect(self._posteriori_editability_changed)
+		scenario_form.addRow("Scenario may be changed", self.post_scenario_editable)
+
+		self.post_save_name = QtWidgets.QLineEdit()
+		self.post_save_name.setPlaceholderText("custom scenario name")
+		scenario_form.addRow("Save as", self.post_save_name)
+
+		self.post_default_name_btn = QtWidgets.QPushButton("Use Default Name")
+		self.post_default_name_btn.clicked.connect(self._posteriori_set_default_name)
+		scenario_form.addRow("", self.post_default_name_btn)
+
+		self.post_loaded_label = QtWidgets.QLabel("")
+		self.post_loaded_label.setWordWrap(True)
+		scenario_form.addRow("State", self.post_loaded_label)
+
+		outer.addWidget(scenario_group)
+
+		params_group = QtWidgets.QGroupBox("Scenario Parameters")
+		params_form = QtWidgets.QFormLayout(params_group)
+
+		self.post_measurement_sites = QtWidgets.QLineEdit("")
+		self.post_measurement_sites.setPlaceholderText("comma-separated node ids")
+		self.post_measurement_sites.textChanged.connect(self._posteriori_measurement_sites_changed)
+		params_form.addRow("Measurement sites", self.post_measurement_sites)
+
+		extra_row = QtWidgets.QHBoxLayout()
+		self.post_extra_demand = self._new_double_spin(0.0, 1e6, 0.0, decimals=6, step=0.01)
+		self.post_extra_demand.valueChanged.connect(self._posteriori_extra_demand_changed)
+		extra_row.addWidget(self.post_extra_demand)
+		self.post_extra_default_btn = QtWidgets.QPushButton("Use Default")
+		self.post_extra_default_btn.clicked.connect(self._posteriori_apply_default_extra_demand)
+		extra_row.addWidget(self.post_extra_default_btn)
+		params_form.addRow("Extra demand", extra_row)
+
+		outer.addWidget(params_group)
+
+		mh_group = QtWidgets.QGroupBox("M.H. Parameters")
+		mh_form = QtWidgets.QFormLayout(mh_group)
+
+		self.post_elimination_node = QtWidgets.QComboBox()
+		self.post_elimination_node.setEditable(True)
+		self.post_elimination_node.currentTextChanged.connect(lambda *_: self._posteriori_apply_plot_state())
+		mh_form.addRow("Eliminated node", self.post_elimination_node)
+
+		self.post_num_samples = QtWidgets.QSpinBox()
+		self.post_num_samples.setRange(10, 200000)
+		self.post_num_samples.setValue(300)
+		mh_form.addRow("Sample size", self.post_num_samples)
+
+		self.post_burn_in = QtWidgets.QSpinBox()
+		self.post_burn_in.setRange(0, 200000)
+		self.post_burn_in.setValue(100)
+		mh_form.addRow("Burn-in", self.post_burn_in)
+
+		self.post_proposal_std = self._new_double_spin(1e-4, 10.0, 0.05, decimals=4, step=0.01)
+		mh_form.addRow("Proposal std", self.post_proposal_std)
+
+		self.post_use_gram = QtWidgets.QCheckBox()
+		self.post_use_gram.setChecked(True)
+		mh_form.addRow("Robust Jacobian (Gram)", self.post_use_gram)
+
+		self.post_penalty_a = self._new_double_spin(0.0, 100000.0, 1000.0, decimals=4, step=1.0)
+		mh_form.addRow("Punish negativity (a)", self.post_penalty_a)
+
+		outer.addWidget(mh_group)
+
+		self.post_run_button = QtWidgets.QPushButton("Run Posteriori")
+		self.post_run_button.clicked.connect(self._posteriori_run_clicked)
+		outer.addWidget(self.post_run_button)
+
+		self.post_status = QtWidgets.QLabel("")
+		self.post_status.setWordWrap(True)
+		outer.addWidget(self.post_status)
+		outer.addStretch()
+
+		self._post_tab_index = self.tabs.addTab(scroll, "posteriori")
 
 	def _set_linearization_status(self, text: str) -> None:
 		if hasattr(self, "linearization_status"):
@@ -3304,6 +3502,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.comparison_mode_check.setEnabled(not on_ls)
 		if on_ls:
 			self.comparison_mode_check.setChecked(False)
+		on_post = index == getattr(self, "_post_tab_index", -1)
+		if on_post:
+			self._posteriori_apply_plot_state()
+		else:
+			self.plot.set_measurement_editable(True)
+			self.plot.clear_demands_overlay()
 
 	def _parse_ls_nodes(self, text: str) -> "tuple[bool, List[str]]":
 		"""Parse comma-separated explicit node IDs; reject #N shortcuts."""
@@ -3430,6 +3634,558 @@ class MainWindow(QtWidgets.QMainWindow):
 			dlg = ResultsTableDialog(rows, comparison=False, parent=self)
 			dlg.show()
 
+	def _posteriori_scenario_dir(self, wdn: str) -> str:
+		return os.path.join(ROOT_DIR, "scenario", wdn)
+
+	def _posteriori_cache_path(self, wdn: str) -> str:
+		return os.path.join(self._posteriori_scenario_dir(wdn), "cache_index.json")
+
+	def _posteriori_wdn_defaults(self, wdn: str) -> tuple[List[str], float]:
+		json_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.json")
+		if not os.path.isfile(json_path):
+			return [], 0.0
+		try:
+			with open(json_path, encoding="utf-8") as f:
+				cfg = json.load(f)
+		except (OSError, json.JSONDecodeError):
+			return [], 0.0
+		nodes = [str(n).strip() for n in cfg.get("measurement_nodes", []) if str(n).strip()]
+		extra = _float_or_default(cfg.get("extra_demand"), 0.0)
+		return list(dict.fromkeys(nodes)), max(0.0, float(extra))
+
+	def _posteriori_load_cache(self, wdn: str) -> Dict[str, Dict[str, str]]:
+		path = self._posteriori_cache_path(wdn)
+		if not os.path.isfile(path):
+			return {}
+		try:
+			with open(path, encoding="utf-8") as f:
+				payload = json.load(f)
+		except (OSError, json.JSONDecodeError):
+			return {}
+		entries = payload.get("entries", {}) if isinstance(payload, dict) else {}
+		if not isinstance(entries, dict):
+			return {}
+		out: Dict[str, Dict[str, str]] = {}
+		for name, info in entries.items():
+			if not isinstance(info, dict):
+				continue
+			file_name = str(info.get("file", "")).strip()
+			hash_value = str(info.get("hash", "")).strip()
+			if not file_name:
+				continue
+			out[str(name)] = {"file": file_name, "hash": hash_value}
+		return out
+
+	def _posteriori_save_cache(self, wdn: str, entries: Dict[str, Dict[str, str]]) -> None:
+		cache_path = self._posteriori_cache_path(wdn)
+		os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+		payload = {
+			"wdn": wdn,
+			"updated_at": datetime.now().strftime("%Y%m%d-%H%M%S"),
+			"entries": entries,
+		}
+		with open(cache_path, "w", encoding="utf-8") as f:
+			json.dump(payload, f, indent=2, sort_keys=True)
+
+	def _posteriori_hash_for_payload(self, payload: Dict[str, object]) -> str:
+		hash_payload = {
+			"wdn": payload.get("wdn"),
+			"scenario_name": payload.get("scenario_name"),
+			"measurement_nodes": payload.get("measurement_nodes", []),
+			"extra_demand": payload.get("extra_demand", 0.0),
+			"scenario_demands": payload.get("scenario_demands", {}),
+		}
+		return compute_hash(hash_payload)
+
+	def _posteriori_slugify_name(self, text: str) -> str:
+		cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", text.strip())
+		cleaned = cleaned.strip("-_")
+		return cleaned or f"custom-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+	def _posteriori_set_default_name(self) -> None:
+		self.post_save_name.setText(f"custom-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+
+	def _posteriori_mark_dirty(self) -> None:
+		self._post_dirty = True
+		self._post_active_scenario_name = ""
+		self.post_loaded_label.setText("Unsaved edits")
+
+	def _posteriori_base_payload(self, wdn: str) -> Dict[str, object]:
+		network = load_inp_network(os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp"))
+		base_demands = {str(jid): float(node.base_demand) for jid, node in network.junctions.items()}
+		measurement_nodes, extra_demand = self._posteriori_wdn_defaults(wdn)
+		payload: Dict[str, object] = {
+			"wdn": wdn,
+			"wdn_name": wdn,
+			"inp_path": f"./wdn/{wdn}.inp",
+			"scenario_name": "base",
+			"scenario_source": "generated_base",
+			"timestamp": datetime.now().strftime("%Y%m%d-%H%M%S"),
+			"measurement_nodes": measurement_nodes,
+			"extra_demand": float(extra_demand),
+			"base_demands": base_demands,
+			"scenario_demands": dict(base_demands),
+			"scenario_heads": {},
+			"scenario_flows": {},
+		}
+		payload["scenario_hash"] = self._posteriori_hash_for_payload(payload)
+		return payload
+
+	def _posteriori_ensure_base_scenario(self, wdn: str) -> None:
+		scenario_dir = self._posteriori_scenario_dir(wdn)
+		os.makedirs(scenario_dir, exist_ok=True)
+		base_path = os.path.join(scenario_dir, "base.json")
+		if not os.path.isfile(base_path):
+			_write_json(base_path, self._posteriori_base_payload(wdn))
+
+	def _posteriori_rebuild_cache(self, wdn: str) -> Dict[str, Dict[str, str]]:
+		scenario_dir = self._posteriori_scenario_dir(wdn)
+		os.makedirs(scenario_dir, exist_ok=True)
+		entries: Dict[str, Dict[str, str]] = {}
+		for name in sorted(os.listdir(scenario_dir)):
+			if not name.lower().endswith(".json"):
+				continue
+			if name == "cache_index.json":
+				continue
+			path = os.path.join(scenario_dir, name)
+			try:
+				payload = _read_json(path)
+			except Exception:
+				continue
+			scenario_name = str(payload.get("scenario_name") or os.path.splitext(name)[0])
+			hash_value = str(payload.get("scenario_hash") or self._posteriori_hash_for_payload(payload))
+			if not payload.get("scenario_hash"):
+				payload["scenario_hash"] = hash_value
+				_write_json(path, payload)
+			entries[scenario_name] = {"file": name, "hash": hash_value}
+		self._posteriori_save_cache(wdn, entries)
+		return entries
+
+	def _posteriori_refresh_scenario_list(self, select_name: str | None = None) -> None:
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return
+		self._posteriori_ensure_base_scenario(wdn)
+		entries = self._posteriori_rebuild_cache(wdn)
+		names = ["base"] + sorted([n for n in entries.keys() if n != "base"])
+		self.post_scenario_combo.blockSignals(True)
+		self.post_scenario_combo.clear()
+		self.post_scenario_combo.addItems(names)
+		target = select_name if select_name in names else "base"
+		self.post_scenario_combo.setCurrentIndex(max(0, self.post_scenario_combo.findText(target)))
+		self.post_scenario_combo.blockSignals(False)
+		self._posteriori_scenario_changed()
+
+	def _posteriori_scenario_changed(self) -> None:
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return
+		selected = self.post_scenario_combo.currentText().strip() or "base"
+		entries = self._posteriori_load_cache(wdn)
+		entry = entries.get(selected, {"file": f"{selected}.json"})
+		scenario_path = os.path.join(self._posteriori_scenario_dir(wdn), str(entry.get("file", f"{selected}.json")))
+		if not os.path.isfile(scenario_path):
+			if selected == "base":
+				self._posteriori_ensure_base_scenario(wdn)
+			else:
+				return
+			if not os.path.isfile(scenario_path):
+				return
+
+		payload = _read_json(scenario_path)
+		network = load_inp_network(os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp"))
+		base_demands = {str(jid): float(node.base_demand) for jid, node in network.junctions.items()}
+		scenario_demands = {
+			str(jid): float(payload.get("scenario_demands", {}).get(str(jid), base_demands.get(str(jid), 0.0)))
+			for jid in base_demands.keys()
+		}
+		measurement_nodes, default_extra = self._posteriori_wdn_defaults(wdn)
+		loaded_nodes = [str(n).strip() for n in payload.get("measurement_nodes", measurement_nodes) if str(n).strip()]
+		extra = _float_or_default(payload.get("extra_demand"), default_extra)
+
+		self._post_active_scenario_name = selected
+		self._post_active_scenario_path = scenario_path
+		self._post_base_demands = base_demands
+		self._post_current_demands = scenario_demands
+		self._post_loaded_heads = {str(k): float(v) for k, v in payload.get("scenario_heads", {}).items() if isinstance(v, (int, float))}
+		self._post_loaded_flows = {str(k): float(v) for k, v in payload.get("scenario_flows", {}).items() if isinstance(v, (int, float))}
+		self._post_dirty = False
+		self._post_last_saved_name = selected
+
+		self._post_updating_measurement_text = True
+		self.post_measurement_sites.setText(", ".join(loaded_nodes))
+		self._post_updating_measurement_text = False
+		self.post_extra_demand.blockSignals(True)
+		self.post_extra_demand.setValue(max(0.0, float(extra)))
+		self.post_extra_demand.blockSignals(False)
+		self.post_scenario_editable.blockSignals(True)
+		self.post_scenario_editable.setChecked(True)
+		self.post_scenario_editable.blockSignals(False)
+		self._posteriori_set_default_name()
+		self._posteriori_refresh_elimination_candidates(loaded_nodes)
+		self._posteriori_apply_plot_state()
+		self.post_loaded_label.setText(f"Loaded: {selected}")
+		self.post_status.setText(f"Loaded scenario '{selected}'.")
+
+	def _posteriori_parse_nodes(self, text: str) -> List[str]:
+		junction_set = set(self.plot.get_junction_nodes())
+		if not junction_set:
+			return []
+		tokens = [tok.strip() for tok in re.split(r"[\s,;]+", text) if tok.strip()]
+		out: List[str] = []
+		seen: set[str] = set()
+		for tok in tokens:
+			if tok not in junction_set:
+				continue
+			if tok in seen:
+				continue
+			seen.add(tok)
+			out.append(tok)
+		return out
+
+	def _posteriori_measurement_sites_changed(self, text: str) -> None:
+		if self._post_updating_measurement_text:
+			return
+		nodes = self._posteriori_parse_nodes(text)
+		self._posteriori_mark_dirty()
+		self._posteriori_refresh_elimination_candidates(nodes)
+		self.plot.set_measurements(nodes)
+
+	def _posteriori_refresh_elimination_candidates(self, measurement_nodes: List[str]) -> None:
+		junction_nodes = self.plot.get_junction_nodes()
+		candidates = [n for n in junction_nodes if n not in set(measurement_nodes)]
+		self.post_elimination_node.blockSignals(True)
+		current = self.post_elimination_node.currentText().strip()
+		self.post_elimination_node.clear()
+		self.post_elimination_node.addItems(candidates)
+		if candidates:
+			default_idx = min(candidates, key=lambda n: int(n) if str(n).isdigit() else 10**9)
+			target = current if current in candidates else default_idx
+			self.post_elimination_node.setCurrentIndex(max(0, self.post_elimination_node.findText(target)))
+		self.post_elimination_node.blockSignals(False)
+
+	def _posteriori_apply_default_extra_demand(self) -> None:
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return
+		_default_nodes, default_extra = self._posteriori_wdn_defaults(wdn)
+		self.post_extra_demand.setValue(default_extra)
+
+	def _posteriori_extra_demand_changed(self, _value: float) -> None:
+		self._posteriori_mark_dirty()
+
+	def _posteriori_editability_changed(self, editable: bool) -> None:
+		self.post_measurement_sites.setEnabled(bool(editable))
+		self.post_extra_demand.setEnabled(bool(editable))
+		self.post_extra_default_btn.setEnabled(bool(editable))
+		self.plot.set_measurement_editable(bool(editable) and self.tabs.currentIndex() == self._post_tab_index)
+
+	def _posteriori_apply_plot_state(self) -> None:
+		self.plot.clear_node_mae()
+		if not self._post_base_demands:
+			self.plot.clear_demands_overlay()
+			self.plot.set_highlight_node(None)
+			return
+		nodes = self._posteriori_parse_nodes(self.post_measurement_sites.text())
+		self.plot.set_measurements(nodes)
+		self.plot.set_demands_overlay(self._post_base_demands, self._post_current_demands)
+		elim = self.post_elimination_node.currentText().strip()
+		self.plot.set_highlight_node(elim if elim else None)
+		self.plot.set_measurement_editable(self.post_scenario_editable.isChecked() and self.tabs.currentIndex() == self._post_tab_index)
+
+	def _posteriori_node_right_clicked(self, node_id: str) -> None:
+		if self.tabs.currentIndex() != getattr(self, "_post_tab_index", -1):
+			return
+		if not self.post_scenario_editable.isChecked():
+			return
+		if node_id not in self._post_base_demands:
+			return
+
+		base_val = float(self._post_base_demands.get(node_id, 0.0))
+		current_val = float(self._post_current_demands.get(node_id, base_val))
+		current_delta = max(0.0, current_val - base_val)
+		extra_budget = float(self.post_extra_demand.value())
+		total_delta = sum(max(0.0, float(self._post_current_demands.get(j, 0.0) - self._post_base_demands.get(j, 0.0))) for j in self._post_base_demands.keys())
+		available_for_node = max(0.0, extra_budget - (total_delta - current_delta))
+
+		dialog = QtWidgets.QDialog(self)
+		dialog.setWindowTitle(f"Set Δd for node {node_id}")
+		layout = QtWidgets.QVBoxLayout(dialog)
+		info = QtWidgets.QLabel(f"Allowed range: 0.0 to {available_for_node:.6f}")
+		layout.addWidget(info)
+		value_label = QtWidgets.QLabel("")
+		layout.addWidget(value_label)
+		slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+		scale = 10000
+		slider.setRange(0, max(0, int(round(available_for_node * scale))))
+		slider.setValue(max(0, int(round(current_delta * scale))))
+		layout.addWidget(slider)
+
+		def _update_label() -> None:
+			delta = slider.value() / scale
+			value_label.setText(f"Δd = {delta:.6f}   d = {base_val + delta:.6f}")
+
+		slider.valueChanged.connect(_update_label)
+		_update_label()
+
+		btns = QtWidgets.QDialogButtonBox(
+			QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+		)
+		btns.accepted.connect(dialog.accept)
+		btns.rejected.connect(dialog.reject)
+		layout.addWidget(btns)
+
+		if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+			return
+
+		new_delta = slider.value() / scale
+		self._post_current_demands[node_id] = base_val + new_delta
+		self._posteriori_mark_dirty()
+		self._posteriori_apply_plot_state()
+
+	def _posteriori_simulate_scenario(self, wdn: str, demands: Dict[str, float]) -> tuple[bool, Dict[str, float], Dict[str, float], str]:
+		try:
+			import wntr
+		except ImportError:
+			return False, {}, {}, "wntr is not available. Install wntr to simulate scenario heads."
+
+		inp_path = os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp")
+		try:
+			wn = wntr.network.WaterNetworkModel(inp_path)
+			# Flatten demand patterns to 1.0: the demands dict already contains the
+			# intended values in m³/s; we do not want EPANET to apply extra multipliers
+			# from the .inp file (e.g. a 0.5 diurnal-pattern factor).
+			for _, pat in wn.patterns():
+				pat.multipliers = [1.0] * len(pat.multipliers)
+			for jid, val in demands.items():
+				if jid in wn.junction_name_list:
+					node = wn.get_node(jid)
+					new_val = float(val)
+					if not math.isfinite(new_val) or new_val < 0.0:
+						return False, {}, {}, f"Invalid demand for junction {jid}: {new_val}"
+					if hasattr(node, "demand_timeseries_list") and len(node.demand_timeseries_list) > 0:
+						node.demand_timeseries_list[0].base_value = new_val
+					else:
+						# Fallback for unusual junction objects.
+						try:
+							node.add_demand(new_val, pattern_name=None)
+						except Exception:
+							try:
+								node.base_demand = new_val
+							except Exception:
+								return False, {}, {}, f"Could not set demand for junction {jid}"
+
+			# Prefer EPANET; if it fails with input parsing errors, fall back to WNTR simulator for diagnostics/continuity.
+			try:
+				sim = wntr.sim.EpanetSimulator(wn)
+				res = sim.run_sim()
+			except Exception as epanet_exc:
+				try:
+					sim = wntr.sim.WNTRSimulator(wn)
+					res = sim.run_sim()
+				except Exception as wntr_exc:
+					detail = (
+						f"EPANET: {type(epanet_exc).__name__}: {epanet_exc}\n"
+						f"WNTR fallback: {type(wntr_exc).__name__}: {wntr_exc}"
+					)
+					return False, {}, {}, detail
+			head_series = res.node["head"].iloc[0]
+			flow_series = res.link["flowrate"].iloc[0]
+			heads = {str(k): float(v) for k, v in head_series.to_dict().items() if isinstance(v, (int, float)) and math.isfinite(float(v))}
+			flows = {str(k): float(v) for k, v in flow_series.to_dict().items() if isinstance(v, (int, float)) and math.isfinite(float(v))}
+			return True, heads, flows, ""
+		except Exception as exc:
+			return False, {}, {}, f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=2)}"
+
+	def _posteriori_find_feasible_elimination_node(
+		self,
+		ns: Dict[str, object],
+		inp_path: str,
+		measurement_heads: Dict[str, float],
+		measured_total_demand: float,
+		predictor_heads: Dict[str, float],
+		config_obj: object,
+	) -> Optional[str]:
+		sampler_cls = ns.get("PosteriorScenarioSampler")
+		if sampler_cls is None:
+			return None
+		try:
+			probe = sampler_cls(
+				inp_path=inp_path,
+				measurement_heads=measurement_heads,
+				measured_total_demand=measured_total_demand,
+				predictor_heads=predictor_heads,
+				config=config_obj,
+			)
+		except Exception:
+			return None
+
+		for node in list(getattr(probe, "unobserved_nodes", [])):
+			try:
+				s = sampler_cls(
+					inp_path=inp_path,
+					measurement_heads=measurement_heads,
+					measured_total_demand=measured_total_demand,
+					predictor_heads=predictor_heads,
+					elimination_node=str(node),
+					config=config_obj,
+				)
+				st = s._evaluate_state(s.initial_z, s.initial_hv)
+				if bool(getattr(st, "feasible", False)):
+					return str(node)
+			except Exception:
+				continue
+		return None
+
+	def _posteriori_run_clicked(self) -> None:
+		if not self.post_scenario_editable.isChecked():
+			QtWidgets.QMessageBox.warning(self, "Run blocked", "Run cannot start while 'Scenario may be changed' is disabled.")
+			return
+
+		wdn = self.wdn_input.currentText().strip()
+		if not wdn:
+			return
+		if not self._post_base_demands:
+			QtWidgets.QMessageBox.warning(self, "No scenario", "No scenario is loaded.")
+			return
+
+		extra_budget = float(self.post_extra_demand.value())
+		total_delta = sum(max(0.0, float(self._post_current_demands.get(j, 0.0) - self._post_base_demands.get(j, 0.0))) for j in self._post_base_demands.keys())
+		if total_delta > extra_budget + 1e-9:
+			QtWidgets.QMessageBox.warning(
+				self,
+				"Extra demand exceeded",
+				f"Total Δd={total_delta:.6f} exceeds extra_demand={extra_budget:.6f}.",
+			)
+			return
+
+		measurement_nodes = self._posteriori_parse_nodes(self.post_measurement_sites.text())
+		scenario_name = self._posteriori_slugify_name(self.post_save_name.text())
+		ok, heads, flows, err = self._posteriori_simulate_scenario(wdn, self._post_current_demands)
+		if not ok:
+			fake_cmd = ["posteriori", "simulate", wdn]
+			fake_proc = subprocess.CompletedProcess(fake_cmd, 1, stdout="", stderr=str(err))
+			self._store_output("Posteriori Simulation Output", fake_cmd, fake_proc)
+			QtWidgets.QMessageBox.warning(self, "Scenario simulation failed", f"Could not simulate scenario:\n{err}")
+			return
+
+		scenario_payload: Dict[str, object] = {
+			"wdn": wdn,
+			"wdn_name": wdn,
+			"inp_path": f"./wdn/{wdn}.inp",
+			"scenario_name": scenario_name,
+			"scenario_source": self._post_active_scenario_name or "gui",
+			"timestamp": datetime.now().strftime("%Y%m%d-%H%M%S"),
+			"measurement_nodes": measurement_nodes,
+			"extra_demand": extra_budget,
+			"base_demands": self._post_base_demands,
+			"scenario_demands": self._post_current_demands,
+			"scenario_heads": heads,
+			"scenario_flows": flows,
+		}
+		scenario_payload["scenario_hash"] = self._posteriori_hash_for_payload(scenario_payload)
+
+		scenario_dir = self._posteriori_scenario_dir(wdn)
+		os.makedirs(scenario_dir, exist_ok=True)
+		if self._post_dirty:
+			scenario_path = os.path.join(scenario_dir, f"{scenario_name}.json")
+			_write_json(scenario_path, scenario_payload)
+			self._posteriori_refresh_scenario_list(select_name=scenario_name)
+			self._post_last_saved_name = scenario_name
+			self.post_loaded_label.setText(f"Loaded: {scenario_name}")
+		else:
+			scenario_name = self._post_last_saved_name or (self.post_scenario_combo.currentText().strip() or "base")
+
+		missing_measurements = [n for n in measurement_nodes if n not in heads]
+		if missing_measurements:
+			QtWidgets.QMessageBox.warning(
+				self,
+				"Missing measurement heads",
+				"Scenario simulation did not provide heads for selected measurement nodes: " + ", ".join(missing_measurements),
+			)
+			return
+
+		try:
+			ns = runpy.run_path(os.path.join(ROOT_DIR, "mh_posteriori-scenario-gen.py"))
+			cfg_cls = ns["MHPosteriorConfig"]
+			run_sampler = ns["sample_posterior_scenarios"]
+			inp_abs = os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp")
+			measurement_heads = {n: float(heads[n]) for n in measurement_nodes}
+			total_demand_value = float(sum(float(v) for v in self._post_current_demands.values()))
+			predictor_heads = {str(k): float(v) for k, v in heads.items()}
+			requested_elim = (self.post_elimination_node.currentText().strip() or None)
+			cfg = cfg_cls(
+				burn_in=int(self.post_burn_in.value()),
+				num_samples=int(self.post_num_samples.value()),
+				proposal_std=float(self.post_proposal_std.value()),
+				use_square_reduced_jacobian=not bool(self.post_use_gram.isChecked()),
+				demand_penalty_a=float(self.post_penalty_a.value()),
+			)
+			auto_elim = self._posteriori_find_feasible_elimination_node(
+				ns=ns,
+				inp_path=inp_abs,
+				measurement_heads=measurement_heads,
+				measured_total_demand=total_demand_value,
+				predictor_heads=predictor_heads,
+				config_obj=cfg,
+			)
+			elim_to_use = requested_elim
+			if auto_elim is not None and requested_elim != auto_elim:
+				elim_to_use = auto_elim
+				self.post_elimination_node.blockSignals(True)
+				self.post_elimination_node.setCurrentIndex(max(0, self.post_elimination_node.findText(auto_elim)))
+				self.post_elimination_node.blockSignals(False)
+				self._posteriori_apply_plot_state()
+			result = run_sampler(
+				inp_path=inp_abs,
+				measurement_heads=measurement_heads,
+				measured_total_demand=total_demand_value,
+				predictor_heads=predictor_heads,
+				elimination_node=elim_to_use,
+				config=cfg,
+			)
+		except Exception as exc:
+			fake_cmd = ["posteriori", "mh", wdn]
+			fake_proc = subprocess.CompletedProcess(fake_cmd, 1, stdout="", stderr=str(exc))
+			self._store_output("Posteriori MH Output", fake_cmd, fake_proc)
+			QtWidgets.QMessageBox.warning(self, "Posteriori run failed", str(exc))
+			return
+
+		try:
+			import numpy as _np_mae
+			_net_mae = load_inp_network(inp_abs)
+			_junc_ids = list(_net_mae.junctions.keys())
+			if result.samples_d.shape[0] > 0 and result.samples_d.shape[1] == len(_junc_ids):
+				_ref = _np_mae.array([self._post_current_demands.get(str(j), 0.0) for j in _junc_ids])
+				_mae_arr = _np_mae.mean(_np_mae.abs(result.samples_d - _ref[None, :]), axis=0)
+				_mae_dict = {str(_junc_ids[i]): float(_mae_arr[i]) for i in range(len(_junc_ids))}
+				self.plot.set_node_mae(_mae_dict, max(extra_budget / 2.0, 1e-9))
+		except Exception:
+			pass
+
+		mh_out_path = os.path.join(scenario_dir, f"{scenario_name}_mh_result.json")
+		mh_payload = {
+			"scenario": scenario_name,
+			"measurement_nodes": measurement_nodes,
+			"num_samples": int(result.samples_h.shape[0]),
+			"acceptance_rate": float(result.acceptance_rate),
+			"infeasible_rate": float(result.infeasible_rate),
+			"punished_rate": float(result.punished_rate),
+			"proposal_std_final": float(result.proposal_std_final),
+			"min_ess": float(result.min_ess),
+			"median_ess": float(result.median_ess),
+			"diagnostics": {str(k): float(v) for k, v in result.diagnostics.items()},
+		}
+		_write_json(mh_out_path, mh_payload)
+		self._post_dirty = False
+		self.post_status.setText(
+			f"Run complete. acceptance={float(result.acceptance_rate):.3f}, "
+			f"punished={float(result.punished_rate):.3f}, "
+			f"median_ess={float(result.median_ess):.2f}, "
+			f"output={os.path.basename(mh_out_path)}"
+		)
+		self.status_bar.showMessage("Posteriori run completed.")
+
 	def _wdn_changed(self) -> None:
 		self.solver_params.wdn = self.wdn_input.currentText().strip()
 		if hasattr(self, "model_a"):
@@ -3445,6 +4201,8 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.gnn_default_nodes_label.setText(", ".join(default_nodes) if default_nodes else "(none)")
 			self._gnn_refresh_dataset_status()
 			self._gnn_populate_model_combos()
+		if hasattr(self, "post_scenario_combo"):
+			self._posteriori_refresh_scenario_list(select_name="base")
 
 	def _load_network(self) -> None:
 		wdn = self.wdn_input.currentText().strip()
@@ -3453,6 +4211,8 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.solver_params.wdn = wdn
 		try:
 			self.plot.load_network(wdn)
+			self._posteriori_ensure_base_scenario(wdn)
+			self._posteriori_refresh_scenario_list(select_name="base")
 			if not self._updating_measurement_text:
 				self._measurement_text_changed(self.measurement_list.text())
 			self.status_bar.showMessage(f"Loaded network {wdn}")
@@ -3460,6 +4220,13 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.status_bar.showMessage(f"Failed to load network: {exc}")
 
 	def _measurement_updated(self, nodes: List[str]) -> None:
+		if self.tabs.currentIndex() == getattr(self, "_post_tab_index", -1):
+			self._post_updating_measurement_text = True
+			self.post_measurement_sites.setText(", ".join(nodes))
+			self._post_updating_measurement_text = False
+			self._post_dirty = True
+			self._posteriori_refresh_elimination_candidates(nodes)
+			return
 		self._updating_measurement_text = True
 		self.measurement_list.setText(", ".join(nodes))
 		self._updating_measurement_text = False
