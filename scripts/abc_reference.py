@@ -72,6 +72,7 @@ def main() -> None:
 	ap.add_argument("--rwm-proposal-std", type=float, default=0.5)
 	ap.add_argument("--ens-walkers", type=int, default=0, help="0 = auto (2*dim+2)")
 	ap.add_argument("--ens-disp", type=float, default=0.02)
+	ap.add_argument("--m2-eps", type=float, default=0.0, help="M2 soft-sensor width; 0 = match ABC tolerance")
 	ap.add_argument("--no-rwm", action="store_true", help="skip the random-walk variant")
 	args = ap.parse_args()
 
@@ -129,15 +130,22 @@ def main() -> None:
 	meas = {s: h_true[s] for s in args.sensors}
 	col = [junc_ids.index(j) for j in junc_ids]  # identity; samples_d is in junction order
 
+	# Match M2's soft-sensor width to the ABC tolerance so the two are directly comparable
+	# (both -> exact posterior as eps -> 0).
+	m2_eps = args.m2_eps if args.m2_eps > 0 else eps
+
 	variants = {}
 	if not args.no_rwm:
-		variants["RWM (random-walk)"] = Cfg(
-			proposal="rwm", burn_in=args.burn_in, num_samples=args.samples,
+		variants["M1 pressure/RWM"] = Cfg(
+			method="pressure", proposal="rwm", burn_in=args.burn_in, num_samples=args.samples,
 			proposal_std=args.rwm_proposal_std, demand_penalty_a=0.0,
 			num_chains=args.rwm_chains, chain_init_dispersion=0.2)
-	variants["Ensemble (stretch)"] = Cfg(
-		proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+	variants["M1 pressure/ensemble"] = Cfg(
+		method="pressure", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
 		demand_penalty_a=0.0, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=args.ens_disp)
+	variants["M2 demand/ensemble"] = Cfg(
+		method="demand", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+		sensor_noise_eps=m2_eps, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.3)
 
 	print(f"Dimension (free z): first build to report ...")
 	results = {}

@@ -50,6 +50,19 @@ class MHPosteriorConfig:
 	ensemble_walkers: int = 0          # 0 => auto = max(2*dim + 2, 8), rounded up to even
 	ensemble_stretch_a: float = 2.0    # stretch scale a > 1 (larger = bolder proposals)
 	ensemble_init_dispersion: float = 0.3  # Gaussian spread of walker starts around predictor init
+	# Sampling coordinate / method:
+	#   "pressure" (M1) = reduced pressure coordinates, demands reconstructed, hard sensor +
+	#                     total-demand elimination + Gram-Jacobian (the original construction).
+	#   "demand"   (M2) = demand-share coordinates (softmax of a free vector on the simplex),
+	#                     pressures forward-solved, Dirichlet prior evaluated natively, sensors
+	#                     imposed softly by a Gaussian likelihood of width sensor_noise_eps.
+	#                     Well-conditioned on low-flow networks; total demand + floor are exact
+	#                     by construction; ε -> 0 reproduces the exact (ABC) posterior.
+	method: str = "pressure"
+	sensor_noise_eps: float = 0.05     # sensor measurement-noise std (m of head), M2 soft likelihood
+	forward_max_iter: int = 40
+	forward_tol: float = 1e-10
+	forward_max_step: float = 50.0
 	# Soft demand-floor penalty (model 2a).  When > 0, demands below d_base are
 	# allowed but penalised by  -(a / target_extra) * Σ_j max(0, d_base_j - d_j)².
 	# Set to 0.0 to keep the original hard floor (backward-compatible default).
@@ -89,6 +102,10 @@ class _StateEval:
 	log_dirichlet: float
 	log_jacobian: float
 	g_residual: float
+	# Generic (method-agnostic) state vector and warm-start payload, filled by _eval so the
+	# proposal loops work for both the pressure ("z", warm=hv) and demand ("y", warm=h) methods.
+	x: Optional[np.ndarray] = None
+	warm: object = None
 
 
 class PosteriorScenarioSampler:
@@ -141,6 +158,16 @@ class PosteriorScenarioSampler:
 		self.predictor_heads: Dict[str, float] = {
 			str(k): float(v) for k, v in predictor_heads.items()
 		}
+
+		# Sensor set = the true measurement nodes (before reservoirs are pinned below).  The
+		# demand method (M2) uses these as a soft Gaussian likelihood rather than fixing them.
+		self.sensor_ids: List[str] = [str(k) for k in measurement_heads.keys()]
+		self.sensor_node_idxs = np.array(
+			[self.node_idx[s] for s in self.sensor_ids if s in self.node_idx], dtype=int
+		)
+		self.sensor_targets = np.array(
+			[float(measurement_heads[s]) for s in self.sensor_ids if s in self.node_idx], dtype=float
+		)
 
 		# Reservoir heads are known boundary conditions, not latent coordinates.  Pinning
 		# them (rather than sampling them) is essential: a free reservoir head is a spurious,
@@ -195,6 +222,33 @@ class PosteriorScenarioSampler:
 
 		self.pipe_data = self._build_pipe_arrays()
 		self.initial_z, self.initial_hv = self._initial_state_from_predictor()
+
+		# --- Demand-space (M2) setup -------------------------------------------------------
+		# State is a free vector y in R^(n_junctions-1); shares alpha = softmax([y, 0]);
+		# demands d = base + target_extra * alpha (floor and total exact by construction);
+		# pressures are forward-solved and sensors imposed by a Gaussian likelihood.
+		self.junction_node_idxs = np.array(
+			[self.node_idx[j] for j in self.junction_ids], dtype=int
+		)
+		# Full-node head vector holding the fixed (reservoir) heads; free junction heads are
+		# overwritten by the forward solve.
+		self._base_head_vec = np.array(
+			[float(self.predictor_heads.get(nid, self.fixed_heads.get(nid, 0.0))) for nid in self.node_ids],
+			dtype=float,
+		)
+		for nid, val in self.fixed_heads.items():
+			if nid in self.node_idx:
+				self._base_head_vec[self.node_idx[nid]] = float(val)
+
+		if str(self.cfg.method).lower() == "demand":
+			self.dim = self.n_junctions - 1
+			if self.dim <= 0:
+				raise ValueError("Demand method needs at least 2 junctions.")
+			self.initial_x = np.zeros(self.dim, dtype=float)  # uniform shares
+			self.initial_warm = self._base_head_vec.copy()
+		else:
+			self.initial_x = self.initial_z
+			self.initial_warm = self.initial_hv
 
 	@staticmethod
 	def _infer_headloss_exponent(options: Dict[str, str]) -> float:
@@ -494,12 +548,85 @@ class PosteriorScenarioSampler:
 		log_target = float(log_dir + log_jac + log_penalty)
 		return _StateEval(True, z, hv, h, d, log_target, log_dir, log_jac, g)
 
-	def _run_chain(self, z_init: np.ndarray, hv_init: float, rng: np.random.Generator) -> Dict[str, object]:
+	# ---- Demand-space method (M2) --------------------------------------------------------
+	def _shares_from_y(self, y: np.ndarray) -> np.ndarray:
+		"""Softmax of [y, 0] -> shares alpha on the interior simplex (bijective, unconstrained)."""
+		ext = np.concatenate([y, [0.0]])
+		ext = ext - np.max(ext)
+		e = np.exp(ext)
+		return e / np.sum(e)
+
+	def _forward_solve(self, d_target: np.ndarray, h_init: np.ndarray) -> Tuple[bool, np.ndarray]:
+		"""Solve the hydraulics for pressures given demands (reservoir heads fixed).
+
+		Newton on the junction heads: find h s.t. F(h) = d_target, where F is the nodal-demand
+		map.  This is the well-conditioned forward (convex) direction — unlike reconstructing
+		demands from pressures.  Warm-started from h_init.
+		"""
+		h = h_init.copy()
+		jidx = self.junction_node_idxs
+		for _ in range(int(self.cfg.forward_max_iter)):
+			d_cur, J = self._demands_and_jacobian(h)
+			resid = d_cur - d_target
+			if float(np.max(np.abs(resid))) <= self.cfg.forward_tol:
+				return True, h
+			Jjj = J[:, jidx]
+			try:
+				step = np.linalg.solve(Jjj, -resid)
+			except np.linalg.LinAlgError:
+				return False, h
+			if not np.all(np.isfinite(step)):
+				return False, h
+			step = np.clip(step, -self.cfg.forward_max_step, self.cfg.forward_max_step)
+			h[jidx] += step
+		d_cur, _ = self._demands_and_jacobian(h)
+		ok = float(np.max(np.abs(d_cur - d_target))) <= max(self.cfg.forward_tol * 100.0, 1e-8)
+		return ok, h
+
+	def _evaluate_demand(self, y: np.ndarray, h_warm: np.ndarray) -> _StateEval:
+		alpha = self._shares_from_y(y)
+		d = self.base_demands + self.target_extra * alpha
+		h_init = h_warm if (h_warm is not None and np.all(np.isfinite(h_warm))) else self._base_head_vec
+		ok, h = self._forward_solve(d, h_init)
+		if not ok:
+			st = _StateEval(False, y, 0.0, h, d, -np.inf, -np.inf, -np.inf, 0.0)
+			st.x = y
+			st.warm = h
+			return st
+
+		# Prior (Dirichlet on shares) + reparametrisation Jacobian of the softmax transform.
+		# For alpha ~ Dirichlet(a), the induced density on y is proportional to prod alpha_j^{a_j},
+		# so the combined log term is sum_j a_j * log(alpha_j).
+		log_prior = float(np.sum(self.alpha * np.log(np.maximum(alpha, 1e-300))))
+		# Soft sensor likelihood (Gaussian measurement noise of width sensor_noise_eps).
+		if self.sensor_node_idxs.size:
+			resid = h[self.sensor_node_idxs] - self.sensor_targets
+			eps = max(float(self.cfg.sensor_noise_eps), 1e-9)
+			log_lik = -0.5 * float(np.sum(resid ** 2)) / (eps * eps)
+		else:
+			log_lik = 0.0
+
+		log_target = log_prior + log_lik
+		st = _StateEval(True, y, 0.0, h, d, log_target, log_prior, log_lik, 0.0)
+		st.x = y
+		st.warm = h
+		return st
+
+	def _eval(self, x: np.ndarray, warm: object) -> _StateEval:
+		"""Method-agnostic state evaluation used by the proposal loops."""
+		if str(self.cfg.method).lower() == "demand":
+			return self._evaluate_demand(x, warm)
+		st = self._evaluate_state(x, float(warm) if warm is not None else float(self.initial_hv))
+		st.x = st.z
+		st.warm = st.hv
+		return st
+
+	def _run_chain(self, x_init: np.ndarray, warm_init: object, rng: np.random.Generator) -> Dict[str, object]:
 		"""Run a single Metropolis-Hastings chain and return its samples and counters."""
 		total_iters = int(self.cfg.burn_in + self.cfg.num_samples * self.cfg.thin)
 		adapt_until = int(self.cfg.burn_in * self.cfg.adapt_until_fraction)
 
-		current = self._evaluate_state(z_init.copy(), float(hv_init))
+		current = self._eval(np.asarray(x_init, dtype=float).copy(), warm_init)
 		# An infeasible initial state (log_target = -inf) is fine: any feasible proposal
 		# from a -inf state has log_alpha = min(0, finite - (-inf)) = 0, so it is always
 		# accepted, and the chain reaches the posterior region immediately.
@@ -515,8 +642,8 @@ class PosteriorScenarioSampler:
 		block_accepted = 0
 
 		for it in range(total_iters):
-			z_prop = current.z + rng.normal(0.0, proposal_std, size=self.dim)
-			prop = self._evaluate_state(z_prop, current.hv)  # warm-start hv from current state
+			x_prop = current.x + rng.normal(0.0, proposal_std, size=self.dim)
+			prop = self._eval(x_prop, current.warm)  # warm-start from current state
 
 			if not prop.feasible:
 				infeasible += 1
@@ -545,7 +672,7 @@ class PosteriorScenarioSampler:
 				block_accepted = 0
 
 			if it >= self.cfg.burn_in and ((it - self.cfg.burn_in) % self.cfg.thin == 0):
-				samples_z.append(current.z.copy())
+				samples_z.append(current.x.copy())
 				samples_h.append(current.h.copy())
 				samples_d.append(current.d.copy())
 				log_targets.append(float(current.log_target))
@@ -589,10 +716,10 @@ class PosteriorScenarioSampler:
 		walkers: List[_StateEval] = []
 		for k in range(K):
 			if k == 0:
-				z0 = self.initial_z.copy()
+				x0 = np.asarray(self.initial_x, dtype=float).copy()
 			else:
-				z0 = self.initial_z + self.cfg.ensemble_init_dispersion * rng.normal(0.0, 1.0, size=dim)
-			walkers.append(self._evaluate_state(z0, float(self.initial_hv)))
+				x0 = np.asarray(self.initial_x, dtype=float) + self.cfg.ensemble_init_dispersion * rng.normal(0.0, 1.0, size=dim)
+			walkers.append(self._eval(x0, self.initial_warm))
 
 		samples_z: List[List[np.ndarray]] = [[] for _ in range(K)]
 		samples_h: List[List[np.ndarray]] = [[] for _ in range(K)]
@@ -611,12 +738,12 @@ class PosteriorScenarioSampler:
 			for active, complement in splits:
 				for k in active:
 					j = int(complement[rng.integers(len(complement))])
-					zk = walkers[k].z
-					zj = walkers[j].z
+					xk = walkers[k].x
+					xj = walkers[j].x
 					u = rng.random()
 					z_stretch = ((a - 1.0) * u + 1.0) ** 2 / a
-					z_prop = zj + z_stretch * (zk - zj)
-					prop = self._evaluate_state(z_prop, walkers[k].hv)
+					x_prop = xj + z_stretch * (xk - xj)
+					prop = self._eval(x_prop, walkers[k].warm)
 					if not prop.feasible:
 						infeasible[k] += 1
 						continue
@@ -628,7 +755,7 @@ class PosteriorScenarioSampler:
 
 			if it >= self.cfg.burn_in and ((it - self.cfg.burn_in) % self.cfg.thin == 0):
 				for k in range(K):
-					samples_z[k].append(walkers[k].z.copy())
+					samples_z[k].append(walkers[k].x.copy())
 					samples_h[k].append(walkers[k].h.copy())
 					samples_d[k].append(walkers[k].d.copy())
 					log_targets[k].append(float(walkers[k].log_target))
@@ -657,21 +784,22 @@ class PosteriorScenarioSampler:
 			num_chains = max(1, int(self.cfg.num_chains))
 			# Chain 0 starts at the predictor init; extra chains start over-dispersed around it
 			# so a split-R-hat can detect chains that fail to reach a common distribution.
-			inits: List[Tuple[np.ndarray, float]] = [(self.initial_z.copy(), float(self.initial_hv))]
+			x_base = np.asarray(self.initial_x, dtype=float)
+			inits: List[Tuple[np.ndarray, object]] = [(x_base.copy(), self.initial_warm)]
 			for c in range(1, num_chains):
 				disp_rng = np.random.default_rng(
 					None if self.cfg.rng_seed is None else self.cfg.rng_seed + 1000 + c
 				)
-				z0 = self.initial_z + self.cfg.chain_init_dispersion * disp_rng.normal(0.0, 1.0, size=self.dim)
-				inits.append((z0, float(self.initial_hv)))
+				x0 = x_base + self.cfg.chain_init_dispersion * disp_rng.normal(0.0, 1.0, size=self.dim)
+				inits.append((x0, self.initial_warm))
 
 			chain_results = []
 			for c in range(num_chains):
 				chain_rng = np.random.default_rng(
 					None if self.cfg.rng_seed is None else self.cfg.rng_seed + c
 				)
-				z0, hv0 = inits[c]
-				chain_results.append(self._run_chain(z0, hv0, chain_rng))
+				x0, warm0 = inits[c]
+				chain_results.append(self._run_chain(x0, warm0, chain_rng))
 		elapsed_seconds = float(time.perf_counter() - start_time)
 		num_chains = len(chain_results)
 

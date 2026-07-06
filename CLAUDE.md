@@ -75,6 +75,21 @@ posterior `π(h,d | M)` over scenarios consistent with a measurement `M`.
 - Public entry: `sample_posterior_scenarios(...) → MHSamplingResult`
   (`samples_d`, `samples_h`, `samples_z`, `log_targets`, acceptance/ESS diagnostics).
 
+**Sampling method (`cfg.method`).** `"pressure"` (M1, default-legacy) = reduced pressure
+coordinates, demands reconstructed, hard sensor + total-demand elimination + Gram-Jacobian.
+`"demand"` (M2) = sample demand shares (softmax of a free vector on the simplex), pressures
+forward-solved (`_forward_solve`, the well-conditioned convex direction), Dirichlet prior
+evaluated natively (`Σ a_j log α_j`, incl. the reparam Jacobian), sensors imposed *softly*
+by a Gaussian likelihood of width `cfg.sensor_noise_eps`. Total demand + floor are exact by
+construction; `ε→0` reproduces the ABC oracle. M2 is well-conditioned on low-flow networks:
+on Kadu, M1 is frozen (acc 0, R-hat 1e9) while **M2 mixes** (acc 0.24, R-hat 1.17); both
+match the oracle to 0.08σ on well-conditioned Alperovits. Both `method`s work with either
+`proposal`; the proposal loops are method-agnostic via `_eval`/`_StateEval.x`/`.warm`. The
+GUI posteriori tab has a "Sampling Method" selector (above Scenario Choice) + an ε control.
+Caveat: M2's internal HW forward solve (tol 1e-10) vs EPANET (accuracy 1e-3) diverge on
+low-flow Kadu, so the M2-vs-EPANET-ABC gap there is a solver-consistency artifact, not an
+M2 bug (they agree on Alperovits). A same-hydraulics oracle would isolate this.
+
 **Proposal mechanism (`cfg.proposal`).** `"rwm"` = isotropic random-walk Metropolis
 (default, legacy); `"ensemble"` = affine-invariant ensemble / stretch-move sampler
 (Goodman-Weare), gradient-free and reusing the same target+feasibility. On the thin

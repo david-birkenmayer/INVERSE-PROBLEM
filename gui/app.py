@@ -2228,6 +2228,32 @@ class MainWindow(QtWidgets.QMainWindow):
 		outer = QtWidgets.QVBoxLayout(container)
 		outer.setContentsMargins(4, 4, 4, 4)
 
+		# --- Sampling method selector (sits above the scenario choice) ---------------------
+		method_group = QtWidgets.QGroupBox("Sampling Method")
+		method_form = QtWidgets.QFormLayout(method_group)
+		self.post_method_combo = QtWidgets.QComboBox()
+		# (label, method, proposal) — data carried on each item.
+		self._post_methods = [
+			("M2 · Demand-space (Dirichlet, soft sensor) — ensemble", "demand", "ensemble"),
+			("M1 · Pressure-space (Dirichlet, hard sensor) — ensemble", "pressure", "ensemble"),
+			("M1 · Pressure-space — random-walk", "pressure", "rwm"),
+			("M2 · Demand-space — random-walk", "demand", "rwm"),
+		]
+		for label, meth, prop in self._post_methods:
+			self.post_method_combo.addItem(label, userData=(meth, prop))
+		self.post_method_combo.setToolTip(
+			"Demand-space (M2): demands primary, pressures forward-solved, sensor imposed softly "
+			"by measurement noise ε — well-conditioned on low-flow networks.\n"
+			"Pressure-space (M1): reduced pressure coordinates with demand reconstruction (original)."
+		)
+		self.post_method_combo.currentIndexChanged.connect(self._post_method_changed)
+		method_form.addRow("Method", self.post_method_combo)
+
+		self.post_sensor_eps = self._new_double_spin(1e-4, 10.0, 0.05, decimals=4, step=0.01)
+		self.post_sensor_eps.setToolTip("Sensor measurement-noise σ (m of head), used by the demand method's soft likelihood. Smaller → tighter posterior (→ exact as ε→0).")
+		method_form.addRow("Sensor noise ε (M2)", self.post_sensor_eps)
+		outer.addWidget(method_group)
+
 		scenario_group = QtWidgets.QGroupBox("Scenario Choice")
 		scenario_form = QtWidgets.QFormLayout(scenario_group)
 
@@ -4150,6 +4176,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._update_post_plot_deltas()
 		self.plot.set_measurement_editable(self.post_scenario_editable.isChecked() and self.tabs.currentIndex() == self._post_tab_index)
 
+	def _post_method_changed(self) -> None:
+		data = self.post_method_combo.currentData() or ("pressure", "ensemble")
+		method = data[0]
+		# Sensor-noise ε only applies to the demand method (soft sensor likelihood).
+		self.post_sensor_eps.setEnabled(method == "demand")
+
 	def _posteriori_node_right_clicked(self, node_id: str) -> None:
 		if self.tabs.currentIndex() != getattr(self, "_post_tab_index", -1):
 			return
@@ -4447,6 +4479,10 @@ class MainWindow(QtWidgets.QMainWindow):
 			measurement_heads = {n: float(heads[n]) for n in measurement_nodes}
 			total_demand_value = float(sum(float(v) for v in self._post_current_demands.values()))
 			predictor_heads = {str(k): float(v) for k, v in heads.items()}
+			method, proposal = self.post_method_combo.currentData() or ("pressure", "ensemble")
+			# Demand method (M2) needs walkers started inside the feasible region -> small
+			# init dispersion; the pressure method tolerates a wider spread.
+			ens_disp = 0.3 if method == "demand" else 0.02
 			cfg = cfg_cls(
 				burn_in=int(self.post_burn_in.value()),
 				num_samples=int(self.post_num_samples.value()),
@@ -4454,6 +4490,10 @@ class MainWindow(QtWidgets.QMainWindow):
 				use_square_reduced_jacobian=not bool(self.post_use_gram.isChecked()),
 				demand_penalty_a=float(self.post_penalty_a.value()),
 				num_chains=int(self.post_num_chains.value()),
+				method=method,
+				proposal=proposal,
+				sensor_noise_eps=float(self.post_sensor_eps.value()),
+				ensemble_init_dispersion=ens_disp,
 			)
 			result = run_sampler(
 				inp_path=inp_abs,
