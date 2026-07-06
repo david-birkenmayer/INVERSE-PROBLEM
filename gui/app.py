@@ -914,6 +914,7 @@ class SolverModelWidget(QtWidgets.QGroupBox):
 class NetworkPlot(QtWidgets.QWidget):
 	measurement_changed = QtCore.pyqtSignal(list)
 	node_right_clicked = QtCore.pyqtSignal(str)
+	reservoir_right_clicked = QtCore.pyqtSignal(str)
 
 	def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
 		super().__init__(parent)
@@ -938,12 +939,14 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._highlight_node: Optional[str] = None
 		self._node_mae: Dict[str, float] = {}
 		self._mae_max: float = 1.0
+		self._elimination_node: Optional[str] = None
+		self._node_deltas: Dict[str, float] = {}
 		self._init_ui()
 
 	def _init_ui(self) -> None:
 		layout = QtWidgets.QVBoxLayout(self)
 		layout.addWidget(self.canvas)
-		self.canvas.mpl_connect("button_press_event", self._on_click)
+		self.canvas.mpl_connect("button_press_event", self._on_press)
 
 	def load_network(self, wdn_name: str) -> None:
 		self.ax.clear()
@@ -962,6 +965,8 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._highlight_node = None
 		self._node_mae = {}
 		self._mae_max = 1.0
+		self._elimination_node = None
+		self._node_deltas = {}
 
 		inp_path = f"./wdn/{wdn_name}.inp"
 		network = load_inp_network(inp_path)
@@ -1033,6 +1038,24 @@ class NetworkPlot(QtWidgets.QWidget):
 		self._mae_max = 1.0
 		self._redraw()
 
+	def set_elimination_node(self, node_id: Optional[str]) -> None:
+		self._elimination_node = str(node_id) if node_id else None
+		self._redraw()
+
+	def set_node_deltas(self, deltas: Dict[str, float]) -> None:
+		self._node_deltas = {str(k): float(v) for k, v in deltas.items()}
+		self._redraw()
+
+	def _delta_to_color(self, delta: float) -> str:
+		max_delta = max(self._node_deltas.values()) if self._node_deltas else 0.0
+		if max_delta <= 1e-12:
+			return "#e0f2fe"
+		t = min(1.0, max(0.0, delta / max_delta))
+		r = int(round(224 + t * (124 - 224)))
+		g = int(round(242 + t * (58 - 242)))
+		b = int(round(254 + t * (237 - 254)))
+		return f"#{r:02x}{g:02x}{b:02x}"
+
 	def _mae_to_color(self, mae: float) -> str:
 		t = min(1.0, max(0.0, mae / self._mae_max))
 		r = int(round(39 + t * 192))   # #27ae60 → #e74c3c
@@ -1060,6 +1083,26 @@ class NetworkPlot(QtWidgets.QWidget):
 		if self._network is None:
 			return []
 		return sorted(str(node_id) for node_id in self._network.junctions.keys())
+
+	def get_reservoir_adjacent_junctions(self) -> List[str]:
+		"""Returns junction IDs directly connected to any reservoir via a pipe.
+
+		These are the only valid elimination nodes: dg/dh_v is nonzero only for
+		junctions that share a pipe with the reservoir.
+		"""
+		if self._network is None:
+			return []
+		junction_ids = set(str(jid) for jid in self._network.junctions.keys())
+		reservoir_ids = set(str(rid) for rid in self._network.reservoirs.keys())
+		neighbors: List[str] = []
+		seen: set = set()
+		for pipe in self._network.pipes.values():
+			s, t = str(pipe.start_node), str(pipe.end_node)
+			for res_end, junc_end in [(s, t), (t, s)]:
+				if res_end in reservoir_ids and junc_end in junction_ids and junc_end not in seen:
+					neighbors.append(junc_end)
+					seen.add(junc_end)
+		return neighbors
 
 	def get_pipe_adjacency(self) -> Dict[str, List[str]]:
 		"""Returns junction→[neighboring junctions] connected by a pipe."""
@@ -1113,27 +1156,40 @@ class NetworkPlot(QtWidgets.QWidget):
 			ys = [self._node_pos[n][1] for n in nodes]
 			self.ax.scatter(xs, ys, s=size, marker=marker, c=color, edgecolors=edge, alpha=alpha, zorder=2)
 
-		if self._node_mae:
-			for nodes_grp, edge, lw in [
-				([n for n in junctions if n in self._measurement_set], "#1a365d", 2.0),
-				([n for n in junctions if n not in self._measurement_set], "#555555", 0.5),
-			]:
-				if nodes_grp:
-					xs = [self._node_pos[n][0] for n in nodes_grp]
-					ys = [self._node_pos[n][1] for n in nodes_grp]
-					colors = [self._mae_to_color(self._node_mae.get(n, 0.0)) for n in nodes_grp]
-					self.ax.scatter(xs, ys, s=110.0, marker="o", c=colors, edgecolors=edge, linewidths=lw, zorder=2)
-			_scatter(reservoirs, "s", "#a0aec0", "#4a5568", size=110.0)
-		elif self._show_sensors_mode:
+		use_mae = bool(self._node_mae)
+		use_delta = bool(self._node_deltas) and not use_mae
+		elim = self._elimination_node
+
+		def _node_fill(node_id: str) -> str:
+			if use_mae:
+				return self._mae_to_color(self._node_mae.get(node_id, 0.0))
+			if use_delta:
+				return self._delta_to_color(self._node_deltas.get(node_id, 0.0))
+			return "#f2f2f2"
+
+		def _scatter_per_node(nodes: List[str], marker: str, edge: str, size: float, lw: float = 1.0, z: float = 2.0, alpha: float = 1.0) -> None:
+			if not nodes:
+				return
+			xs = [self._node_pos[n][0] for n in nodes]
+			ys = [self._node_pos[n][1] for n in nodes]
+			colors = [_node_fill(n) for n in nodes]
+			self.ax.scatter(xs, ys, s=size, marker=marker, c=colors, edgecolors=edge, linewidths=lw, alpha=alpha, zorder=z)
+
+		if self._show_sensors_mode:
 			_scatter(others, "o", "#e2e8f0", "#94a3b8", size=70.0, alpha=0.45)
 			_scatter(measurements, "h", "#ffdd57", "#8a5a00", size=190.0, alpha=1.0)
 			_scatter(reservoirs, "s", "#90cdf4", "#1a365d", size=135.0, alpha=0.95)
 		else:
-			_scatter(others, "o", "#f2f2f2", "#333333")
-			_scatter(measurements, "h", "#90cdf4", "#1a365d")
-			_scatter(reservoirs, "s", "#90cdf4", "#1a365d")
+			junc_set = set(junctions)
+			elim_grp = [elim] if elim and elim in junc_set else []
+			meas_grp = [n for n in junctions if n in self._measurement_set and n != elim]
+			other_grp = [n for n in junctions if n not in self._measurement_set and n != elim]
+			_scatter_per_node(other_grp, "o", "#555555", 90.0, lw=0.5, z=2.0)
+			_scatter_per_node(meas_grp, "h", "#333333", 190.0, lw=1.5, z=2.2)
+			_scatter_per_node(elim_grp, "^", "#7c3aed", 200.0, lw=2.0, z=2.5)
+			_scatter(reservoirs, "s", "#a0aec0", "#4a5568", size=110.0)
 
-		if self._highlight_node and self._highlight_node in self._node_pos and self._highlight_node not in self._reservoir_set and not self._node_mae:
+		if self._highlight_node and self._highlight_node in self._node_pos and self._highlight_node not in self._reservoir_set and not self._node_mae and self._highlight_node != elim:
 			xh, yh = self._node_pos[self._highlight_node]
 			self.ax.scatter([xh], [yh], s=250.0, marker="o", c="#48bb78", edgecolors="#22543d", linewidths=1.6, zorder=2.8)
 
@@ -1202,57 +1258,238 @@ class NetworkPlot(QtWidgets.QWidget):
 			wdn_name = f"{wdn_name} | sensors: {len(measurements)}"
 		if self._node_mae:
 			wdn_name = f"{wdn_name} | MAE  green=0 … red={self._mae_max:.4f}"
+		elif self._node_deltas:
+			max_d = max(self._node_deltas.values()) if self._node_deltas else 0.0
+			wdn_name = f"{wdn_name} | Δ  light-blue=0 … dark-purple={max_d:.4f}"
 		self.ax.set_title(wdn_name)
 		self.ax.axis("off")
 		self.canvas.draw_idle()
 
-	def _on_click(self, event) -> None:
-		if self._network is None or event.inaxes != self.ax:
-			return
-		if event.xdata is None or event.ydata is None:
-			return
+	def _click_threshold_sq(self) -> float:
+		xs = [p[0] for p in self._node_pos.values()]
+		ys = [p[1] for p in self._node_pos.values()]
+		if not xs or not ys:
+			return 0.0
+		t = 0.02 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+		return t * t
 
-		x, y = float(event.xdata), float(event.ydata)
-		min_dist = None
-		closest = None
+	def _find_closest_junction(self, x: float, y: float) -> tuple[Optional[str], Optional[float]]:
+		min_dist: Optional[float] = None
+		closest: Optional[str] = None
 		for node_id in self._node_ids:
 			if node_id in self._reservoir_set:
 				continue
 			pos = self._node_pos.get(node_id)
 			if pos is None:
 				continue
-			dx = pos[0] - x
-			dy = pos[1] - y
-			dist = dx * dx + dy * dy
-			if min_dist is None or dist < min_dist:
-				min_dist = dist
+			d = (pos[0] - x) ** 2 + (pos[1] - y) ** 2
+			if min_dist is None or d < min_dist:
+				min_dist = d
 				closest = node_id
+		return closest, min_dist
 
-		if closest is None:
+	def _find_closest_any(self, x: float, y: float) -> tuple[Optional[str], Optional[float]]:
+		min_dist: Optional[float] = None
+		closest: Optional[str] = None
+		for node_id in self._node_ids:
+			pos = self._node_pos.get(node_id)
+			if pos is None:
+				continue
+			d = (pos[0] - x) ** 2 + (pos[1] - y) ** 2
+			if min_dist is None or d < min_dist:
+				min_dist = d
+				closest = node_id
+		return closest, min_dist
+
+	def _on_press(self, event) -> None:
+		if self._network is None or event.inaxes != self.ax:
 			return
-		xs = [p[0] for p in self._node_pos.values()]
-		ys = [p[1] for p in self._node_pos.values()]
-		if not xs or not ys:
+		if event.xdata is None or event.ydata is None:
 			return
-		range_x = max(xs) - min(xs)
-		range_y = max(ys) - min(ys)
-		threshold = 0.02 * max(range_x, range_y, 1.0)
-		if min_dist is None or min_dist > threshold * threshold:
-			return
+		x, y = float(event.xdata), float(event.ydata)
+		thresh_sq = self._click_threshold_sq()
 
 		if event.button == MouseButton.RIGHT:
-			self.node_right_clicked.emit(str(closest))
+			closest, dist = self._find_closest_any(x, y)
+			if closest is None or dist is None or dist > thresh_sq:
+				return
+			if closest in self._reservoir_set:
+				self.reservoir_right_clicked.emit(str(closest))
+			else:
+				self.node_right_clicked.emit(str(closest))
 			return
 
-		if not self._allow_measurement_edit:
-			return
+		if event.button == MouseButton.LEFT:
+			closest, dist = self._find_closest_junction(x, y)
+			if closest is None or dist is None or dist > thresh_sq:
+				return
+			if not self._allow_measurement_edit:
+				return
+			if closest == self._elimination_node:
+				return
+			if closest in self._measurement_set:
+				self._measurement_set.remove(closest)
+			else:
+				self._measurement_set.add(closest)
+			self._redraw()
+			self.measurement_changed.emit(sorted(self._measurement_set))
 
-		if closest in self._measurement_set:
-			self._measurement_set.remove(closest)
+
+class ScenarioViewerDialog(QtWidgets.QDialog):
+	"""Shows individual MCMC samples with per-node absolute error coloured green→red."""
+
+	def __init__(
+		self,
+		samples_d,
+		junc_ids: List[str],
+		scenario_demands: Dict[str, float],
+		burn_in: int,
+		network,
+		node_pos: Dict[str, tuple],
+		reservoir_set: set,
+		measurement_set: set,
+		elimination_node: Optional[str],
+		log_targets=None,
+		parent=None,
+	) -> None:
+		super().__init__(parent)
+		self.setWindowTitle("Simulated Scenarios Viewer")
+		self.resize(780, 620)
+		import numpy as _np
+		self._samples_d = samples_d
+		self._junc_ids = junc_ids
+		self._scenario_arr = _np.array([float(scenario_demands.get(str(j), 0.0)) for j in junc_ids])
+		self._burn_in = burn_in
+		self._network = network
+		self._node_pos = node_pos
+		self._reservoir_set = reservoir_set
+		self._measurement_set = measurement_set
+		self._elimination_node = elimination_node
+		self._log_targets = log_targets
+		self._current_idx = 0
+		n_samples = len(samples_d)
+		all_err = _np.abs(samples_d - self._scenario_arr[None, :])
+		self._max_error = max(float(_np.max(all_err)), 1e-9)
+
+		layout = QtWidgets.QVBoxLayout(self)
+		self._idx_label = QtWidgets.QLabel()
+		layout.addWidget(self._idx_label)
+
+		nav = QtWidgets.QHBoxLayout()
+		self._prev_btn = QtWidgets.QPushButton("◀  Prev")
+		self._next_btn = QtWidgets.QPushButton("Next  ▶")
+		self._skip_btn = QtWidgets.QPushButton("Skip burn-in")
+		nav.addWidget(self._prev_btn)
+		nav.addWidget(self._next_btn)
+		nav.addWidget(self._skip_btn)
+		layout.addLayout(nav)
+
+		self._figure = Figure(figsize=(6, 5))
+		self._canvas = FigureCanvas(self._figure)
+		self._ax = self._figure.add_subplot(111)
+		layout.addWidget(self._canvas)
+
+		self._prev_btn.clicked.connect(self._go_prev)
+		self._next_btn.clicked.connect(self._go_next)
+		self._skip_btn.clicked.connect(self._skip_burn_in)
+
+		self._draw_current()
+
+	def _error_to_color(self, err: float) -> str:
+		t = min(1.0, max(0.0, err / self._max_error))
+		r = int(round(39 + t * 192))
+		g = int(round(174 - t * 98))
+		b = int(round(96 - t * 36))
+		return f"#{r:02x}{g:02x}{b:02x}"
+
+	def _go_prev(self) -> None:
+		if self._current_idx > 0:
+			self._current_idx -= 1
+			self._draw_current()
+
+	def _go_next(self) -> None:
+		if self._current_idx < len(self._samples_d) - 1:
+			self._current_idx += 1
+			self._draw_current()
+
+	def _skip_burn_in(self) -> None:
+		target = min(self._burn_in, len(self._samples_d) - 1)
+		if target != self._current_idx:
+			self._current_idx = target
+			self._draw_current()
+
+	def _draw_current(self) -> None:
+		import numpy as _np
+		self._ax.clear()
+		idx = self._current_idx
+		n = len(self._samples_d)
+
+		d_sample = self._samples_d[idx]
+		delta_arr = d_sample - self._scenario_arr
+		errors = _np.abs(delta_arr)
+		err_dict = {str(self._junc_ids[i]): float(errors[i]) for i in range(len(self._junc_ids))}
+		d_dict = {str(self._junc_ids[i]): float(d_sample[i]) for i in range(len(self._junc_ids))}
+		delta_dict = {str(self._junc_ids[i]): float(delta_arr[i]) for i in range(len(self._junc_ids))}
+
+		for pipe in self._network.pipes.values():
+			s = self._node_pos.get(pipe.start_node)
+			e = self._node_pos.get(pipe.end_node)
+			if s and e:
+				self._ax.plot([s[0], e[0]], [s[1], e[1]], color="#a0aec0", linewidth=1.0, zorder=1)
+
+		all_nodes = list(self._node_pos.keys())
+		junctions = [nd for nd in all_nodes if nd not in self._reservoir_set]
+		reservoirs = [nd for nd in all_nodes if nd in self._reservoir_set]
+		elim = self._elimination_node
+		junc_set = set(junctions)
+		elim_grp = [elim] if elim and elim in junc_set else []
+		meas_grp = [nd for nd in junctions if nd in self._measurement_set and nd != elim]
+		other_grp = [nd for nd in junctions if nd not in self._measurement_set and nd != elim]
+
+		def _sc(nodes, marker, edge, size, lw=1.0, z=2):
+			if not nodes:
+				return
+			xs = [self._node_pos[nd][0] for nd in nodes]
+			ys = [self._node_pos[nd][1] for nd in nodes]
+			colors = [self._error_to_color(err_dict.get(nd, 0.0)) for nd in nodes]
+			self._ax.scatter(xs, ys, s=size, marker=marker, c=colors, edgecolors=edge, linewidths=lw, zorder=z)
+
+		_sc(other_grp, "o", "#555555", 90.0, lw=0.5)
+		_sc(meas_grp, "h", "#333333", 190.0, lw=1.5, z=2.2)
+		_sc(elim_grp, "^", "#7c3aed", 200.0, lw=2.0, z=2.5)
+		if reservoirs:
+			rxs = [self._node_pos[nd][0] for nd in reservoirs]
+			rys = [self._node_pos[nd][1] for nd in reservoirs]
+			self._ax.scatter(rxs, rys, s=110.0, marker="s", c="#a0aec0", edgecolors="#4a5568", zorder=2)
+
+		all_pos = list(self._node_pos.values())
+		if all_pos:
+			y_off = 0.03 * max(max(p[1] for p in all_pos) - min(p[1] for p in all_pos),
+								max(p[0] for p in all_pos) - min(p[0] for p in all_pos), 1.0)
 		else:
-			self._measurement_set.add(closest)
-		self._redraw()
-		self.measurement_changed.emit(sorted(self._measurement_set))
+			y_off = 0.05
+		for nd in junctions:
+			pos = self._node_pos.get(nd)
+			if pos:
+				self._ax.text(pos[0], pos[1], str(nd), fontsize=7, ha="center", va="center", color="#111111", zorder=3)
+				d_val = d_dict.get(nd, 0.0)
+				delta_val = delta_dict.get(nd, 0.0)
+				e_val = err_dict.get(nd, 0.0)
+				self._ax.text(pos[0], pos[1] - y_off,
+					f"d={d_val:.4f}  Δ={delta_val:+.4f}\ne={e_val:.4f}",
+					fontsize=6, ha="center", va="top", color="#1f2937", zorder=3)
+
+		lp_tag = ""
+		if self._log_targets is not None and idx < len(self._log_targets):
+			lp_tag = f"  |  log-pdf={self._log_targets[idx]:.4f}"
+		burn_tag = " [burn-in]" if idx < self._burn_in else ""
+		self._ax.set_title(f"Sample {idx + 1}/{n}{burn_tag}{lp_tag}  |  error  green=0 … red={self._max_error:.4f}")
+		self._ax.axis("off")
+		self._idx_label.setText(f"Sample {idx + 1} / {n}{burn_tag}")
+		self._prev_btn.setEnabled(idx > 0)
+		self._next_btn.setEnabled(idx < n - 1)
+		self._skip_btn.setEnabled(idx < self._burn_in and self._burn_in < n)
+		self._canvas.draw_idle()
 
 
 class DemandDistanceViewerDialog(QtWidgets.QDialog):
@@ -1768,6 +2005,10 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._post_loaded_flows: Dict[str, float] = {}
 		self._post_dirty: bool = False
 		self._post_last_saved_name: str = ""
+		self._post_auto_elim_node: Optional[str] = None
+		self._post_mh_result = None
+		self._post_mh_burn_in: int = 0
+		self._post_mh_junc_ids: List[str] = []
 		self._measurement_value: object = []
 		self._measurement_valid = True
 		self._measurement_data_valid = True
@@ -1845,6 +2086,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.plot = NetworkPlot()
 		self.plot.measurement_changed.connect(self._measurement_updated)
 		self.plot.node_right_clicked.connect(self._posteriori_node_right_clicked)
+		self.plot.reservoir_right_clicked.connect(self._posteriori_reservoir_right_clicked)
 		splitter.addWidget(self.plot)
 		self._apply_show_sensors_mode(self.show_sensors_mode.isChecked())
 		splitter.setStretchFactor(1, 1)
@@ -2039,10 +2281,9 @@ class MainWindow(QtWidgets.QMainWindow):
 		mh_group = QtWidgets.QGroupBox("M.H. Parameters")
 		mh_form = QtWidgets.QFormLayout(mh_group)
 
-		self.post_elimination_node = QtWidgets.QComboBox()
-		self.post_elimination_node.setEditable(True)
-		self.post_elimination_node.currentTextChanged.connect(lambda *_: self._posteriori_apply_plot_state())
-		mh_form.addRow("Eliminated node", self.post_elimination_node)
+		self.post_elimination_node_label = QtWidgets.QLabel("(auto)")
+		self.post_elimination_node_label.setStyleSheet("color: #6b7280; font-style: italic;")
+		mh_form.addRow("Eliminated node", self.post_elimination_node_label)
 
 		self.post_num_samples = QtWidgets.QSpinBox()
 		self.post_num_samples.setRange(10, 200000)
@@ -2053,6 +2294,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_burn_in.setRange(0, 200000)
 		self.post_burn_in.setValue(100)
 		mh_form.addRow("Burn-in", self.post_burn_in)
+
+		self.post_num_chains = QtWidgets.QSpinBox()
+		self.post_num_chains.setRange(1, 64)
+		self.post_num_chains.setValue(4)
+		self.post_num_chains.setToolTip("Independent chains from dispersed starts; enables the R-hat convergence check (need ≥2).")
+		mh_form.addRow("Chains (R-hat)", self.post_num_chains)
 
 		self.post_proposal_std = self._new_double_spin(1e-4, 10.0, 0.05, decimals=4, step=0.01)
 		mh_form.addRow("Proposal std", self.post_proposal_std)
@@ -2069,6 +2316,11 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_run_button = QtWidgets.QPushButton("Run Posteriori")
 		self.post_run_button.clicked.connect(self._posteriori_run_clicked)
 		outer.addWidget(self.post_run_button)
+
+		self._post_view_scenarios_btn = QtWidgets.QPushButton("View Simulated Scenarios")
+		self._post_view_scenarios_btn.setEnabled(False)
+		self._post_view_scenarios_btn.clicked.connect(self._posteriori_view_scenarios_clicked)
+		outer.addWidget(self._post_view_scenarios_btn)
 
 		self.post_status = QtWidgets.QLabel("")
 		self.post_status.setWordWrap(True)
@@ -3822,7 +4074,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_scenario_editable.setChecked(True)
 		self.post_scenario_editable.blockSignals(False)
 		self._posteriori_set_default_name()
-		self._posteriori_refresh_elimination_candidates(loaded_nodes)
+		self._posteriori_refresh_elimination_node(loaded_nodes)
 		self._posteriori_apply_plot_state()
 		self.post_loaded_label.setText(f"Loaded: {selected}")
 		self.post_status.setText(f"Loaded scenario '{selected}'.")
@@ -3848,21 +4100,23 @@ class MainWindow(QtWidgets.QMainWindow):
 			return
 		nodes = self._posteriori_parse_nodes(text)
 		self._posteriori_mark_dirty()
-		self._posteriori_refresh_elimination_candidates(nodes)
+		self._posteriori_refresh_elimination_node(nodes)
 		self.plot.set_measurements(nodes)
 
-	def _posteriori_refresh_elimination_candidates(self, measurement_nodes: List[str]) -> None:
-		junction_nodes = self.plot.get_junction_nodes()
-		candidates = [n for n in junction_nodes if n not in set(measurement_nodes)]
-		self.post_elimination_node.blockSignals(True)
-		current = self.post_elimination_node.currentText().strip()
-		self.post_elimination_node.clear()
-		self.post_elimination_node.addItems(candidates)
-		if candidates:
-			default_idx = min(candidates, key=lambda n: int(n) if str(n).isdigit() else 10**9)
-			target = current if current in candidates else default_idx
-			self.post_elimination_node.setCurrentIndex(max(0, self.post_elimination_node.findText(target)))
-		self.post_elimination_node.blockSignals(False)
+	def _posteriori_refresh_elimination_node(self, measurement_nodes: List[str]) -> None:
+		meas_set = set(measurement_nodes)
+		res_adj = [n for n in self.plot.get_reservoir_adjacent_junctions() if n not in meas_set]
+		if not res_adj:
+			res_adj = [n for n in self.plot.get_junction_nodes() if n not in meas_set]
+		if res_adj:
+			# Prefer highest-degree node among candidates (mirrors _choose_central_node).
+			adj = self.plot.get_pipe_adjacency()
+			self._post_auto_elim_node = max(res_adj, key=lambda n: (len(adj.get(n, [])), -int(n) if str(n).isdigit() else 0))
+		else:
+			self._post_auto_elim_node = None
+		label = self._post_auto_elim_node or "(none)"
+		self.post_elimination_node_label.setText(label)
+		self.plot.set_elimination_node(self._post_auto_elim_node)
 
 	def _posteriori_apply_default_extra_demand(self) -> None:
 		wdn = self.wdn_input.currentText().strip()
@@ -3885,12 +4139,15 @@ class MainWindow(QtWidgets.QMainWindow):
 		if not self._post_base_demands:
 			self.plot.clear_demands_overlay()
 			self.plot.set_highlight_node(None)
+			self.plot.set_elimination_node(None)
+			self.plot.set_node_deltas({})
 			return
 		nodes = self._posteriori_parse_nodes(self.post_measurement_sites.text())
 		self.plot.set_measurements(nodes)
 		self.plot.set_demands_overlay(self._post_base_demands, self._post_current_demands)
-		elim = self.post_elimination_node.currentText().strip()
-		self.plot.set_highlight_node(elim if elim else None)
+		self.plot.set_highlight_node(None)
+		self.plot.set_elimination_node(self._post_auto_elim_node)
+		self._update_post_plot_deltas()
 		self.plot.set_measurement_editable(self.post_scenario_editable.isChecked() and self.tabs.currentIndex() == self._post_tab_index)
 
 	def _posteriori_node_right_clicked(self, node_id: str) -> None:
@@ -3942,6 +4199,123 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._post_current_demands[node_id] = base_val + new_delta
 		self._posteriori_mark_dirty()
 		self._posteriori_apply_plot_state()
+
+	def _update_post_plot_deltas(self) -> None:
+		if not self._post_base_demands or not self._post_current_demands:
+			self.plot.set_node_deltas({})
+			return
+		deltas = {
+			j: max(0.0, self._post_current_demands.get(j, 0.0) - self._post_base_demands.get(j, 0.0))
+			for j in self._post_base_demands
+		}
+		self.plot.set_node_deltas(deltas)
+
+	def _posteriori_reservoir_right_clicked(self, node_id: str) -> None:
+		if self.tabs.currentIndex() != getattr(self, "_post_tab_index", -1):
+			return
+		if not self.post_scenario_editable.isChecked():
+			return
+		if not self._post_base_demands:
+			return
+
+		extra_budget = float(self.post_extra_demand.value())
+		total_delta = sum(
+			max(0.0, float(self._post_current_demands.get(j, 0.0) - self._post_base_demands.get(j, 0.0)))
+			for j in self._post_base_demands
+		)
+		remaining = max(0.0, extra_budget - total_delta)
+		min_node_delta = min(
+			max(0.0, float(self._post_current_demands.get(j, 0.0) - self._post_base_demands.get(j, 0.0)))
+			for j in self._post_base_demands
+		) if self._post_base_demands else 0.0
+		max_increase = remaining
+		max_decrease = -min_node_delta
+
+		dialog = QtWidgets.QDialog(self)
+		dialog.setWindowTitle("Adjust All Δ (uniform shift)")
+		layout = QtWidgets.QVBoxLayout(dialog)
+		scale = 100000
+		range_min = int(round(max_decrease * scale))
+		range_max = int(round(max_increase * scale))
+		if range_min >= range_max:
+			QtWidgets.QMessageBox.information(self, "No room", "No budget remaining and all nodes are at minimum.")
+			return
+		info = QtWidgets.QLabel(f"Allowed shift: {max_decrease:.6f} to +{max_increase:.6f}")
+		layout.addWidget(info)
+		value_label = QtWidgets.QLabel("")
+		layout.addWidget(value_label)
+		slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+		slider.setRange(range_min, range_max)
+		slider.setValue(0)
+		layout.addWidget(slider)
+
+		def _update_label() -> None:
+			shift = slider.value() / scale
+			value_label.setText(f"Shift = {shift:+.6f}")
+
+		slider.valueChanged.connect(_update_label)
+		_update_label()
+
+		btns = QtWidgets.QDialogButtonBox(
+			QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+		)
+		btns.accepted.connect(dialog.accept)
+		btns.rejected.connect(dialog.reject)
+		layout.addWidget(btns)
+
+		if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+			return
+
+		shift = slider.value() / scale
+		if abs(shift) < 1e-9:
+			return
+		for j, base_val in self._post_base_demands.items():
+			cur = float(self._post_current_demands.get(j, base_val))
+			cur_delta = max(0.0, cur - base_val)
+			new_delta = max(0.0, cur_delta + shift)
+			self._post_current_demands[j] = base_val + new_delta
+		self._posteriori_mark_dirty()
+		self._posteriori_apply_plot_state()
+
+	def _posteriori_view_scenarios_clicked(self) -> None:
+		result = self._post_mh_result
+		junc_ids = self._post_mh_junc_ids
+		if result is None or not junc_ids:
+			QtWidgets.QMessageBox.information(self, "No data", "Run the sampler first.")
+			return
+		try:
+			import numpy as _np
+			wdn = self.wdn_input.currentText().strip()
+			inp_abs = os.path.join(ROOT_DIR, "wdn", f"{wdn}.inp")
+			net = load_inp_network(inp_abs)
+			coords = {nid: node.coordinates for nid, node in net.nodes.items() if node.coordinates is not None}
+			if len(coords) != len(net.nodes):
+				import networkx as _nx
+				G = _nx.Graph()
+				for nid in net.nodes:
+					G.add_node(nid)
+				for pipe in net.pipes.values():
+					G.add_edge(pipe.start_node, pipe.end_node)
+				coords = _nx.spring_layout(G, seed=1)
+			node_pos = {k: (float(v[0]), float(v[1])) for k, v in coords.items()}
+			measurement_nodes = set(self._posteriori_parse_nodes(self.post_measurement_sites.text()))
+			elim = self._post_auto_elim_node
+			dlg = ScenarioViewerDialog(
+				samples_d=result.samples_d,
+				junc_ids=junc_ids,
+				scenario_demands=self._post_current_demands,
+				burn_in=self._post_mh_burn_in,
+				network=net,
+				node_pos=node_pos,
+				reservoir_set=set(net.reservoirs.keys()),
+				measurement_set=measurement_nodes,
+				elimination_node=elim,
+				log_targets=getattr(result, "log_targets", None),
+				parent=self,
+			)
+			dlg.show()
+		except Exception as exc:
+			QtWidgets.QMessageBox.warning(self, "Error opening viewer", str(exc))
 
 	def _posteriori_simulate_scenario(self, wdn: str, demands: Dict[str, float]) -> tuple[bool, Dict[str, float], Dict[str, float], str]:
 		try:
@@ -3996,46 +4370,6 @@ class MainWindow(QtWidgets.QMainWindow):
 			return True, heads, flows, ""
 		except Exception as exc:
 			return False, {}, {}, f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=2)}"
-
-	def _posteriori_find_feasible_elimination_node(
-		self,
-		ns: Dict[str, object],
-		inp_path: str,
-		measurement_heads: Dict[str, float],
-		measured_total_demand: float,
-		predictor_heads: Dict[str, float],
-		config_obj: object,
-	) -> Optional[str]:
-		sampler_cls = ns.get("PosteriorScenarioSampler")
-		if sampler_cls is None:
-			return None
-		try:
-			probe = sampler_cls(
-				inp_path=inp_path,
-				measurement_heads=measurement_heads,
-				measured_total_demand=measured_total_demand,
-				predictor_heads=predictor_heads,
-				config=config_obj,
-			)
-		except Exception:
-			return None
-
-		for node in list(getattr(probe, "unobserved_nodes", [])):
-			try:
-				s = sampler_cls(
-					inp_path=inp_path,
-					measurement_heads=measurement_heads,
-					measured_total_demand=measured_total_demand,
-					predictor_heads=predictor_heads,
-					elimination_node=str(node),
-					config=config_obj,
-				)
-				st = s._evaluate_state(s.initial_z, s.initial_hv)
-				if bool(getattr(st, "feasible", False)):
-					return str(node)
-			except Exception:
-				continue
-		return None
 
 	def _posteriori_run_clicked(self) -> None:
 		if not self.post_scenario_editable.isChecked():
@@ -4113,35 +4447,20 @@ class MainWindow(QtWidgets.QMainWindow):
 			measurement_heads = {n: float(heads[n]) for n in measurement_nodes}
 			total_demand_value = float(sum(float(v) for v in self._post_current_demands.values()))
 			predictor_heads = {str(k): float(v) for k, v in heads.items()}
-			requested_elim = (self.post_elimination_node.currentText().strip() or None)
 			cfg = cfg_cls(
 				burn_in=int(self.post_burn_in.value()),
 				num_samples=int(self.post_num_samples.value()),
 				proposal_std=float(self.post_proposal_std.value()),
 				use_square_reduced_jacobian=not bool(self.post_use_gram.isChecked()),
 				demand_penalty_a=float(self.post_penalty_a.value()),
+				num_chains=int(self.post_num_chains.value()),
 			)
-			auto_elim = self._posteriori_find_feasible_elimination_node(
-				ns=ns,
-				inp_path=inp_abs,
-				measurement_heads=measurement_heads,
-				measured_total_demand=total_demand_value,
-				predictor_heads=predictor_heads,
-				config_obj=cfg,
-			)
-			elim_to_use = requested_elim
-			if auto_elim is not None and requested_elim != auto_elim:
-				elim_to_use = auto_elim
-				self.post_elimination_node.blockSignals(True)
-				self.post_elimination_node.setCurrentIndex(max(0, self.post_elimination_node.findText(auto_elim)))
-				self.post_elimination_node.blockSignals(False)
-				self._posteriori_apply_plot_state()
 			result = run_sampler(
 				inp_path=inp_abs,
 				measurement_heads=measurement_heads,
 				measured_total_demand=total_demand_value,
 				predictor_heads=predictor_heads,
-				elimination_node=elim_to_use,
+				elimination_node=self._post_auto_elim_node,
 				config=cfg,
 			)
 		except Exception as exc:
@@ -4151,10 +4470,13 @@ class MainWindow(QtWidgets.QMainWindow):
 			QtWidgets.QMessageBox.warning(self, "Posteriori run failed", str(exc))
 			return
 
+		self._post_mh_result = result
+		self._post_mh_burn_in = int(self.post_burn_in.value())
 		try:
 			import numpy as _np_mae
 			_net_mae = load_inp_network(inp_abs)
 			_junc_ids = list(_net_mae.junctions.keys())
+			self._post_mh_junc_ids = _junc_ids
 			if result.samples_d.shape[0] > 0 and result.samples_d.shape[1] == len(_junc_ids):
 				_ref = _np_mae.array([self._post_current_demands.get(str(j), 0.0) for j in _junc_ids])
 				_mae_arr = _np_mae.mean(_np_mae.abs(result.samples_d - _ref[None, :]), axis=0)
@@ -4162,6 +4484,8 @@ class MainWindow(QtWidgets.QMainWindow):
 				self.plot.set_node_mae(_mae_dict, max(extra_budget / 2.0, 1e-9))
 		except Exception:
 			pass
+		if hasattr(self, "_post_view_scenarios_btn"):
+			self._post_view_scenarios_btn.setEnabled(True)
 
 		mh_out_path = os.path.join(scenario_dir, f"{scenario_name}_mh_result.json")
 		mh_payload = {
@@ -4174,14 +4498,23 @@ class MainWindow(QtWidgets.QMainWindow):
 			"proposal_std_final": float(result.proposal_std_final),
 			"min_ess": float(result.min_ess),
 			"median_ess": float(result.median_ess),
+			"elapsed_seconds": float(result.elapsed_seconds),
+			"min_ess_per_sec": float(result.min_ess_per_sec),
+			"median_ess_per_sec": float(result.median_ess_per_sec),
+			"num_chains": int(result.num_chains),
+			"max_rhat": float(result.max_rhat),
 			"diagnostics": {str(k): float(v) for k, v in result.diagnostics.items()},
 		}
 		_write_json(mh_out_path, mh_payload)
 		self._post_dirty = False
+		_rhat = float(result.max_rhat)
+		_rhat_txt = "n/a" if not math.isfinite(_rhat) else f"{_rhat:.3f}"
+		_rhat_flag = " ⚠converge" if (math.isfinite(_rhat) and _rhat > 1.01) else ""
 		self.post_status.setText(
 			f"Run complete. acceptance={float(result.acceptance_rate):.3f}, "
-			f"punished={float(result.punished_rate):.3f}, "
+			f"min_ess/s={float(result.min_ess_per_sec):.2f}, "
 			f"median_ess={float(result.median_ess):.2f}, "
+			f"R-hat={_rhat_txt}{_rhat_flag}, "
 			f"output={os.path.basename(mh_out_path)}"
 		)
 		self.status_bar.showMessage("Posteriori run completed.")
@@ -4225,7 +4558,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			self.post_measurement_sites.setText(", ".join(nodes))
 			self._post_updating_measurement_text = False
 			self._post_dirty = True
-			self._posteriori_refresh_elimination_candidates(nodes)
+			self._posteriori_refresh_elimination_node(nodes)
 			return
 		self._updating_measurement_text = True
 		self.measurement_list.setText(", ".join(nodes))

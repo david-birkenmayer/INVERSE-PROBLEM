@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import ast
 import math
+import time
 
 import numpy as np
 
@@ -35,6 +36,20 @@ class MHPosteriorConfig:
 	use_rank1_det_lemma: bool = True
 	use_square_reduced_jacobian: bool = True
 	rng_seed: Optional[int] = 42
+	# Convergence diagnostics: run several independent chains from dispersed starts so a
+	# split-R-hat (Gelman-Rubin) statistic can be computed.  num_chains=1 keeps the original
+	# single-chain behaviour.  chain_init_dispersion scales the Gaussian spread of the extra
+	# chain starts around the predictor init (in the same units as the reduced pressures z).
+	num_chains: int = 1
+	chain_init_dispersion: float = 1.0
+	# Proposal mechanism: "rwm" = random-walk Metropolis (isotropic Gaussian, the default),
+	# "ensemble" = affine-invariant ensemble sampler (Goodman-Weare stretch move).  The
+	# ensemble is gradient-free (reuses the same target evaluation) and adapts to thin,
+	# linearly-correlated feasible regions where random-walk stalls.
+	proposal: str = "rwm"
+	ensemble_walkers: int = 0          # 0 => auto = max(2*dim + 2, 8), rounded up to even
+	ensemble_stretch_a: float = 2.0    # stretch scale a > 1 (larger = bolder proposals)
+	ensemble_init_dispersion: float = 0.3  # Gaussian spread of walker starts around predictor init
 	# Soft demand-floor penalty (model 2a).  When > 0, demands below d_base are
 	# allowed but penalised by  -(a / target_extra) * Σ_j max(0, d_base_j - d_j)².
 	# Set to 0.0 to keep the original hard floor (backward-compatible default).
@@ -54,6 +69,12 @@ class MHSamplingResult:
 	ess_per_dimension: np.ndarray
 	min_ess: float
 	median_ess: float
+	elapsed_seconds: float
+	min_ess_per_sec: float
+	median_ess_per_sec: float
+	rhat_per_dimension: np.ndarray
+	max_rhat: float
+	num_chains: int
 	diagnostics: Dict[str, float]
 
 
@@ -120,6 +141,18 @@ class PosteriorScenarioSampler:
 		self.predictor_heads: Dict[str, float] = {
 			str(k): float(v) for k, v in predictor_heads.items()
 		}
+
+		# Reservoir heads are known boundary conditions, not latent coordinates.  Pinning
+		# them (rather than sampling them) is essential: a free reservoir head is a spurious,
+		# weakly-identified dimension that destroys chain mixing.  Use the instance's known
+		# head (predictor/measurement) when available, else the .inp base head.
+		for rid in self.network.reservoirs:
+			rid = str(rid)
+			if rid not in self.fixed_heads:
+				res_head = self.predictor_heads.get(rid)
+				if res_head is None:
+					res_head = float(self.network.reservoirs[rid].elevation_m)
+				self.fixed_heads[rid] = float(res_head)
 
 		self.unobserved_nodes = [nid for nid in self.node_ids if nid not in self.fixed_heads]
 		if not self.unobserved_nodes:
@@ -461,13 +494,12 @@ class PosteriorScenarioSampler:
 		log_target = float(log_dir + log_jac + log_penalty)
 		return _StateEval(True, z, hv, h, d, log_target, log_dir, log_jac, g)
 
-	def sample(self) -> MHSamplingResult:
+	def _run_chain(self, z_init: np.ndarray, hv_init: float, rng: np.random.Generator) -> Dict[str, object]:
+		"""Run a single Metropolis-Hastings chain and return its samples and counters."""
 		total_iters = int(self.cfg.burn_in + self.cfg.num_samples * self.cfg.thin)
 		adapt_until = int(self.cfg.burn_in * self.cfg.adapt_until_fraction)
 
-		z = self.initial_z.copy()
-		hv = float(self.initial_hv)
-		current = self._evaluate_state(z, hv)
+		current = self._evaluate_state(z_init.copy(), float(hv_init))
 		# An infeasible initial state (log_target = -inf) is fine: any feasible proposal
 		# from a -inf state has log_alpha = min(0, finite - (-inf)) = 0, so it is always
 		# accepted, and the chain reaches the posterior region immediately.
@@ -483,7 +515,7 @@ class PosteriorScenarioSampler:
 		block_accepted = 0
 
 		for it in range(total_iters):
-			z_prop = current.z + self.rng.normal(0.0, proposal_std, size=self.dim)
+			z_prop = current.z + rng.normal(0.0, proposal_std, size=self.dim)
 			prop = self._evaluate_state(z_prop, current.hv)  # warm-start hv from current state
 
 			if not prop.feasible:
@@ -491,7 +523,7 @@ class PosteriorScenarioSampler:
 				accept = False
 			else:
 				log_alpha = min(0.0, prop.log_target - current.log_target)
-				accept = bool(math.log(self.rng.random()) < log_alpha)
+				accept = bool(math.log(rng.random()) < log_alpha)
 
 			if accept:
 				current = prop
@@ -518,17 +550,155 @@ class PosteriorScenarioSampler:
 				samples_d.append(current.d.copy())
 				log_targets.append(float(current.log_target))
 
-		samples_z_arr = np.asarray(samples_z, dtype=float)
-		samples_h_arr = np.asarray(samples_h, dtype=float)
-		samples_d_arr = np.asarray(samples_d, dtype=float)
-		log_targets_arr = np.asarray(log_targets, dtype=float)
+		return {
+			"samples_z": np.asarray(samples_z, dtype=float),
+			"samples_h": np.asarray(samples_h, dtype=float),
+			"samples_d": np.asarray(samples_d, dtype=float),
+			"log_targets": np.asarray(log_targets, dtype=float),
+			"accepted": accepted,
+			"infeasible": infeasible,
+			"proposal_std_final": proposal_std,
+			"total_iters": total_iters,
+		}
 
-		ess_vec = self._effective_sample_size_per_dim(samples_z_arr)
-		min_ess = float(np.min(ess_vec)) if ess_vec.size else 0.0
-		med_ess = float(np.median(ess_vec)) if ess_vec.size else 0.0
+	def _run_ensemble(self, rng: np.random.Generator) -> List[Dict[str, object]]:
+		"""Affine-invariant ensemble sampler (Goodman-Weare stretch move).
 
-		acceptance_rate = accepted / float(total_iters)
-		infeasible_rate = infeasible / float(total_iters)
+		Runs an ensemble of K walkers.  A walker k is moved toward/away from a randomly
+		chosen partner walker j:  z' = z_j + Z (z_k - z_j),  with the stretch factor Z drawn
+		from g(Z) proportional to 1/sqrt(Z) on [1/a, a].  Proposals built from walker
+		differences automatically align with the ensemble's shape, so a thin, tilted feasible
+		region is explored as easily as a round one (affine invariance).  No gradients are
+		needed; the same self._evaluate_state target and feasibility filter are reused.
+
+		Returns one per-walker result dict (same schema as _run_chain) so the ensemble slots
+		straight into the shared post-processing / R-hat path.  Each walker's trajectory is
+		treated as a chain for the split-R-hat convergence check.
+		"""
+		total_iters = int(self.cfg.burn_in + self.cfg.num_samples * self.cfg.thin)
+		dim = self.dim
+		a = float(self.cfg.ensemble_stretch_a)
+		if a <= 1.0:
+			a = 2.0
+
+		k_req = int(self.cfg.ensemble_walkers) if self.cfg.ensemble_walkers > 0 else max(2 * dim + 2, 8)
+		K = k_req + (k_req % 2)  # even, so the red-black split is balanced
+
+		# Initialise all walkers over-dispersed around the predictor init (walker 0 exactly at
+		# it).  A spread ensemble is required for the difference vectors to span the target.
+		walkers: List[_StateEval] = []
+		for k in range(K):
+			if k == 0:
+				z0 = self.initial_z.copy()
+			else:
+				z0 = self.initial_z + self.cfg.ensemble_init_dispersion * rng.normal(0.0, 1.0, size=dim)
+			walkers.append(self._evaluate_state(z0, float(self.initial_hv)))
+
+		samples_z: List[List[np.ndarray]] = [[] for _ in range(K)]
+		samples_h: List[List[np.ndarray]] = [[] for _ in range(K)]
+		samples_d: List[List[np.ndarray]] = [[] for _ in range(K)]
+		log_targets: List[List[float]] = [[] for _ in range(K)]
+		accepted = np.zeros(K, dtype=int)
+		infeasible = np.zeros(K, dtype=int)
+
+		half = K // 2
+		idx = np.arange(K)
+		splits = [(idx[:half], idx[half:]), (idx[half:], idx[:half])]
+
+		for it in range(total_iters):
+			# Red-black update: each half is moved using partners drawn from the other half,
+			# which preserves detailed balance for the ensemble move.
+			for active, complement in splits:
+				for k in active:
+					j = int(complement[rng.integers(len(complement))])
+					zk = walkers[k].z
+					zj = walkers[j].z
+					u = rng.random()
+					z_stretch = ((a - 1.0) * u + 1.0) ** 2 / a
+					z_prop = zj + z_stretch * (zk - zj)
+					prop = self._evaluate_state(z_prop, walkers[k].hv)
+					if not prop.feasible:
+						infeasible[k] += 1
+						continue
+					# Stretch-move acceptance carries the Z^(dim-1) volume factor.
+					log_alpha = (dim - 1) * math.log(z_stretch) + prop.log_target - walkers[k].log_target
+					if math.log(rng.random()) < log_alpha:
+						walkers[k] = prop
+						accepted[k] += 1
+
+			if it >= self.cfg.burn_in and ((it - self.cfg.burn_in) % self.cfg.thin == 0):
+				for k in range(K):
+					samples_z[k].append(walkers[k].z.copy())
+					samples_h[k].append(walkers[k].h.copy())
+					samples_d[k].append(walkers[k].d.copy())
+					log_targets[k].append(float(walkers[k].log_target))
+
+		results: List[Dict[str, object]] = []
+		for k in range(K):
+			results.append({
+				"samples_z": np.asarray(samples_z[k], dtype=float),
+				"samples_h": np.asarray(samples_h[k], dtype=float),
+				"samples_d": np.asarray(samples_d[k], dtype=float),
+				"log_targets": np.asarray(log_targets[k], dtype=float),
+				"accepted": int(accepted[k]),
+				"infeasible": int(infeasible[k]),
+				"proposal_std_final": float("nan"),  # not applicable to the ensemble move
+				"total_iters": total_iters,          # one proposal per walker per iteration
+			})
+		return results
+
+	def sample(self) -> MHSamplingResult:
+		start_time = time.perf_counter()
+		if str(self.cfg.proposal).lower() == "ensemble":
+			# One ensemble of walkers; each walker trajectory becomes a "chain" for R-hat.
+			ens_rng = np.random.default_rng(self.cfg.rng_seed)
+			chain_results = self._run_ensemble(ens_rng)
+		else:
+			num_chains = max(1, int(self.cfg.num_chains))
+			# Chain 0 starts at the predictor init; extra chains start over-dispersed around it
+			# so a split-R-hat can detect chains that fail to reach a common distribution.
+			inits: List[Tuple[np.ndarray, float]] = [(self.initial_z.copy(), float(self.initial_hv))]
+			for c in range(1, num_chains):
+				disp_rng = np.random.default_rng(
+					None if self.cfg.rng_seed is None else self.cfg.rng_seed + 1000 + c
+				)
+				z0 = self.initial_z + self.cfg.chain_init_dispersion * disp_rng.normal(0.0, 1.0, size=self.dim)
+				inits.append((z0, float(self.initial_hv)))
+
+			chain_results = []
+			for c in range(num_chains):
+				chain_rng = np.random.default_rng(
+					None if self.cfg.rng_seed is None else self.cfg.rng_seed + c
+				)
+				z0, hv0 = inits[c]
+				chain_results.append(self._run_chain(z0, hv0, chain_rng))
+		elapsed_seconds = float(time.perf_counter() - start_time)
+		num_chains = len(chain_results)
+
+		# Split-R-hat is computed from the per-chain z samples before concatenation.
+		per_chain_z = [np.asarray(r["samples_z"], dtype=float) for r in chain_results]
+		rhat_vec = self._split_rhat_per_dim(per_chain_z)
+		max_rhat = float(np.max(rhat_vec)) if rhat_vec.size else float("nan")
+
+		# Concatenate all chains for the returned posterior sample set.
+		samples_z_arr = np.concatenate(per_chain_z, axis=0) if per_chain_z else np.zeros((0, self.dim))
+		samples_h_arr = np.concatenate([r["samples_h"] for r in chain_results], axis=0)
+		samples_d_arr = np.concatenate([r["samples_d"] for r in chain_results], axis=0)
+		log_targets_arr = np.concatenate([r["log_targets"] for r in chain_results], axis=0)
+
+		# Total ESS is the sum of per-chain ESS (independent chains contribute additively).
+		ess_vec = np.sum([self._effective_sample_size_per_dim(z) for z in per_chain_z], axis=0)
+		min_ess = float(np.min(ess_vec)) if getattr(ess_vec, "size", 0) else 0.0
+		med_ess = float(np.median(ess_vec)) if getattr(ess_vec, "size", 0) else 0.0
+		min_ess_per_sec = min_ess / elapsed_seconds if elapsed_seconds > 0 else 0.0
+		med_ess_per_sec = med_ess / elapsed_seconds if elapsed_seconds > 0 else 0.0
+
+		total_iters_all = sum(int(r["total_iters"]) for r in chain_results)
+		accepted_all = sum(int(r["accepted"]) for r in chain_results)
+		infeasible_all = sum(int(r["infeasible"]) for r in chain_results)
+		acceptance_rate = accepted_all / float(total_iters_all) if total_iters_all else 0.0
+		infeasible_rate = infeasible_all / float(total_iters_all) if total_iters_all else 0.0
+		proposal_std_final = float(chain_results[0]["proposal_std_final"])
 
 		if samples_d_arr.size > 0:
 			_punished_mask = np.any(
@@ -543,12 +713,17 @@ class PosteriorScenarioSampler:
 			"acceptance_rate": acceptance_rate,
 			"infeasible_rate": infeasible_rate,
 			"punished_rate": punished_rate,
-			"proposal_std_final": proposal_std,
+			"proposal_std_final": proposal_std_final,
 			"mean_log_target": float(np.mean(log_targets_arr)) if log_targets_arr.size else float("nan"),
 			"std_log_target": float(np.std(log_targets_arr)) if log_targets_arr.size else float("nan"),
 			"target_extra": self.target_extra,
 			"base_total": self.base_total,
 			"measured_total_demand": self.measured_total_demand,
+			"elapsed_seconds": elapsed_seconds,
+			"min_ess_per_sec": min_ess_per_sec,
+			"median_ess_per_sec": med_ess_per_sec,
+			"num_chains": float(num_chains),
+			"max_rhat": max_rhat,
 		}
 
 		return MHSamplingResult(
@@ -559,10 +734,16 @@ class PosteriorScenarioSampler:
 			acceptance_rate=acceptance_rate,
 			infeasible_rate=infeasible_rate,
 			punished_rate=punished_rate,
-			proposal_std_final=proposal_std,
+			proposal_std_final=proposal_std_final,
 			ess_per_dimension=ess_vec,
 			min_ess=min_ess,
 			median_ess=med_ess,
+			elapsed_seconds=elapsed_seconds,
+			min_ess_per_sec=min_ess_per_sec,
+			median_ess_per_sec=med_ess_per_sec,
+			rhat_per_dimension=rhat_vec,
+			max_rhat=max_rhat,
+			num_chains=num_chains,
 			diagnostics=diagnostics,
 		)
 
@@ -598,6 +779,49 @@ class PosteriorScenarioSampler:
 			tau = max(1.0, 1.0 + 2.0 * rho_sum)
 			ess[j] = n / tau
 		return ess
+
+	@staticmethod
+	def _split_rhat_per_dim(per_chain: List[np.ndarray]) -> np.ndarray:
+		"""Split-R-hat (Gelman-Rubin) per coordinate across chains.
+
+		Each chain is split in half to expose within-chain non-stationarity, giving
+		2*num_chains sequences.  R-hat compares between-chain variance B to within-chain
+		variance W: values near 1 indicate the chains have mixed to a common distribution,
+		while R-hat > ~1.01 flags non-convergence.  Returns all-NaN if fewer than 2 chains
+		or too few samples to split.
+		"""
+		chains = [np.asarray(c, dtype=float) for c in per_chain if getattr(c, "ndim", 0) == 2 and c.shape[0] >= 4]
+		if len(chains) < 2:
+			dim = per_chain[0].shape[1] if per_chain and per_chain[0].ndim == 2 else 0
+			return np.full(dim, np.nan, dtype=float)
+
+		# Trim all chains to a common even length, then split each into two halves.
+		n = min(c.shape[0] for c in chains)
+		n -= n % 2
+		if n < 4:
+			return np.full(chains[0].shape[1], np.nan, dtype=float)
+		half = n // 2
+		splits = []
+		for c in chains:
+			splits.append(c[:half])
+			splits.append(c[half:n])
+
+		seqs = np.stack(splits, axis=0)          # (M sequences, half, dim)
+		m, npd = seqs.shape[0], seqs.shape[1]     # M = 2*num_chains, npd = half length
+		chain_means = seqs.mean(axis=1)           # (M, dim)
+		grand_mean = chain_means.mean(axis=0)     # (dim,)
+
+		# Between- and within-sequence variance.
+		b = npd / (m - 1.0) * np.sum((chain_means - grand_mean[None, :]) ** 2, axis=0)
+		chain_vars = seqs.var(axis=1, ddof=1)     # (M, dim)
+		w = chain_vars.mean(axis=0)               # (dim,)
+
+		var_plus = (npd - 1.0) / npd * w + b / npd
+		with np.errstate(divide="ignore", invalid="ignore"):
+			rhat = np.sqrt(var_plus / w)
+		# Degenerate (constant) coordinates have w = 0 → treat as perfectly mixed.
+		rhat = np.where(w > 0.0, rhat, 1.0)
+		return rhat
 
 
 def sample_posterior_scenarios(

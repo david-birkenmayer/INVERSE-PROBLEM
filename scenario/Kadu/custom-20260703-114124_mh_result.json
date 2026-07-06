@@ -1,0 +1,30 @@
+{
+  "acceptance_rate": 0.2975,
+  "diagnostics": {
+    "acceptance_rate": 0.2975,
+    "base_total": 0.294,
+    "infeasible_rate": 0.0,
+    "mean_log_target": -3.075246271040825,
+    "measured_total_demand": 0.5782,
+    "proposal_std_final": 0.054424967252897444,
+    "punished_rate": 1.0,
+    "std_log_target": 1.8423651752206078,
+    "target_extra": 0.28420000000000006
+  },
+  "infeasible_rate": 0.0,
+  "measurement_nodes": [
+    "14",
+    "18",
+    "19",
+    "24",
+    "4",
+    "6"
+  ],
+  "median_ess": 5.871676712002932,
+  "min_ess": 2.770197992422289,
+  "num_samples": 300,
+  "proposal_std_final": 0.054424967252897444,
+  "punished_rate": 1.0,
+  "scenario": "custom-20260703-114124",
+  "scenario_hash": "249a345eb5dfb2163c98450522420d8792fd5287474eeea03cd8e5d5f6c3f37c"
+}
