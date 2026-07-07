@@ -1,0 +1,36 @@
+{
+  "acceptance_rate": 0.08125,
+  "diagnostics": {
+    "acceptance_rate": 0.08125,
+    "base_total": 0.294,
+    "elapsed_seconds": 22.039682379001533,
+    "infeasible_rate": 0.006875,
+    "max_rhat": 7.3785206627642355,
+    "mean_log_target": -121.058119295082,
+    "measured_total_demand": 0.5898299999999999,
+    "median_ess_per_sec": 15.53960128242728,
+    "min_ess_per_sec": 12.732913305811465,
+    "num_chains": 48.0,
+    "proposal_std_final": NaN,
+    "punished_rate": 0.0,
+    "std_log_target": 46.3675086336583,
+    "target_extra": 0.29582999999999987
+  },
+  "elapsed_seconds": 22.039682379001533,
+  "infeasible_rate": 0.006875,
+  "max_rhat": 7.3785206627642355,
+  "measurement_nodes": [
+    "10",
+    "26"
+  ],
+  "median_ess": 342.4878765610221,
+  "median_ess_per_sec": 15.53960128242728,
+  "min_ess": 280.6293650194471,
+  "min_ess_per_sec": 12.732913305811465,
+  "num_chains": 48,
+  "num_samples": 14400,
+  "proposal_std_final": NaN,
+  "punished_rate": 0.0,
+  "scenario": "custom-20260706-165442",
+  "scenario_hash": "54ca2b8c19abe4150d498c81c9aa54d582a7d9c322dc5a66ac762933bf24d35e"
+}

@@ -53,7 +53,34 @@ def _epanet_solver(inp_path: str, junc_ids: List[str]):
 		results = wntr.sim.EpanetSimulator(wn).run_sim()
 		head_df = results.node["head"]
 		t0 = head_df.index[0]
-		return {n: float(head_df.loc[t0, n]) for n in head_df.columns}
+		return {n: float(head_df.loc[t0, n]) for n in head_df.columns}, True
+
+	return solve
+
+
+def _internal_solver(ns, inp_path: str, junc_ids: List[str], d0: np.ndarray, delta: float, init_heads):
+	"""Return d_vector -> heads_dict using the sampler's OWN forward hydraulics.
+
+	Using the same convex Newton solve as the M2 sampler (rather than EPANET) makes the ABC
+	oracle share M2's hydraulics, so any M2-vs-oracle gap is purely the sampler, not a
+	solver-consistency artifact.
+	"""
+	Sampler = ns["PosteriorScenarioSampler"]
+	Cfg = ns["MHPosteriorConfig"]
+	s = Sampler(
+		inp_path=inp_path,
+		measurement_heads={junc_ids[0]: float(init_heads[junc_ids[0]])},
+		measured_total_demand=float(d0.sum() + delta),
+		predictor_heads={k: float(v) for k, v in init_heads.items()},
+		config=Cfg(method="demand"),
+	)
+	order = [s.junction_idx[j] for j in junc_ids]  # map junc_ids -> sampler junction order
+	inv = np.argsort(order)
+
+	def solve(d: np.ndarray):
+		d_sampler = np.asarray(d, dtype=float)[inv]  # reorder into sampler junction order
+		ok, h = s._forward_solve(d_sampler, s._base_head_vec.copy())
+		return {nid: float(h[s.node_idx[nid]]) for nid in s.node_ids}, bool(ok)
 
 	return solve
 
@@ -74,16 +101,28 @@ def main() -> None:
 	ap.add_argument("--ens-disp", type=float, default=0.02)
 	ap.add_argument("--m2-eps", type=float, default=0.0, help="M2 soft-sensor width; 0 = match ABC tolerance")
 	ap.add_argument("--no-rwm", action="store_true", help="skip the random-walk variant")
+	ap.add_argument("--hydraulics", choices=["epanet", "internal"], default="epanet",
+		help="forward model for the ABC oracle: EPANET (independent) or the sampler's own solve "
+			 "(same hydraulics as M2, isolates sampler correctness from solver consistency)")
 	args = ap.parse_args()
 
 	inp = os.path.join(ROOT_DIR, "wdn", f"{args.wdn}.inp")
 	cache = os.path.join(ROOT_DIR, "scripts",
-		f"abc_cache_{args.wdn}_{'-'.join(args.sensors)}_D{args.delta}_s{args.seed}_N{args.n_abc}.npz")
+		f"abc_cache_{args.wdn}_{'-'.join(args.sensors)}_D{args.delta}_s{args.seed}_N{args.n_abc}_{args.hydraulics}.npz")
+
+	ns = runpy.run_path(os.path.join(ROOT_DIR, "mh_posteriori-scenario-gen.py"))
 
 	net = load_inp_network(inp)
 	junc_ids = list(net.junctions.keys())
 	d0 = np.array([net.junctions[j].base_demand for j in junc_ids], dtype=float)
 	D = float(d0.sum()) + args.delta
+
+	# Base heads (one EPANET call) seed the internal forward solve and fix the reservoir head.
+	base_heads, _ = _epanet_solver(inp, junc_ids)(d0)
+	if args.hydraulics == "internal":
+		solve = _internal_solver(ns, inp, junc_ids, d0, args.delta, base_heads)
+	else:
+		solve = _epanet_solver(inp, junc_ids)
 
 	# ---- ABC oracle (cached; independent of the MCMC sampler)
 	if os.path.exists(cache):
@@ -91,26 +130,26 @@ def main() -> None:
 		z = np.load(cache)
 		d_samples, resid, d_true = z["d_samples"], z["resid"], z["d_true"]
 	else:
-		solve = _epanet_solver(inp, junc_ids)
 		rng = np.random.default_rng(args.seed)
 		d_true = d0 + args.delta * rng.dirichlet(np.ones(len(junc_ids)))
-		M_S = np.array([solve(d_true)[s] for s in args.sensors], dtype=float)
-		print(f"Running ABC with {args.n_abc} draws (no cache) ...")
+		h_td, _ = solve(d_true)
+		M_S = np.array([h_td[s] for s in args.sensors], dtype=float)
+		print(f"Running ABC with {args.n_abc} draws ({args.hydraulics} hydraulics, no cache) ...")
 		abc_rng = np.random.default_rng(20260703)
 		d_samples = np.empty((args.n_abc, len(junc_ids)), dtype=float)
-		resid = np.empty(args.n_abc, dtype=float)
+		resid = np.full(args.n_abc, np.inf, dtype=float)
 		for i in range(args.n_abc):
 			d = d0 + args.delta * abc_rng.dirichlet(np.ones(len(junc_ids)))
-			h = solve(d)
+			h, ok = solve(d)
 			d_samples[i] = d
-			resid[i] = float(np.linalg.norm(np.array([h[s] for s in args.sensors]) - M_S))
+			if ok:
+				resid[i] = float(np.linalg.norm(np.array([h[s] for s in args.sensors]) - M_S))
 			if (i + 1) % 5000 == 0:
 				print(f"  {i + 1}/{args.n_abc}")
 		np.savez_compressed(cache, d_samples=d_samples, resid=resid, d_true=d_true)
 		print(f"Cached ABC oracle to {os.path.basename(cache)}")
 
-	solve = _epanet_solver(inp, junc_ids)
-	h_true = solve(d_true)
+	h_true, _ = solve(d_true)
 	M_S = np.array([h_true[s] for s in args.sensors], dtype=float)
 
 	eps = max(float(np.quantile(resid, args.abc_quantile)), 1e-9)
@@ -124,7 +163,6 @@ def main() -> None:
 	print(f"ABC oracle: eps={eps:.4g} (q={args.abc_quantile}), effective sample size={ess_abc:.0f}")
 
 	# ---- MCMC samplers on the same measurement (all hard floor => target = ABC oracle)
-	ns = runpy.run_path(os.path.join(ROOT_DIR, "mh_posteriori-scenario-gen.py"))
 	run = ns["sample_posterior_scenarios"]
 	Cfg = ns["MHPosteriorConfig"]
 	meas = {s: h_true[s] for s in args.sensors}
@@ -146,6 +184,9 @@ def main() -> None:
 	variants["M2 demand/ensemble"] = Cfg(
 		method="demand", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
 		sensor_noise_eps=m2_eps, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.3)
+	variants["M5 demand_exact/ensemble"] = Cfg(
+		method="demand_exact", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+		ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.01)
 
 	print(f"Dimension (free z): first build to report ...")
 	results = {}

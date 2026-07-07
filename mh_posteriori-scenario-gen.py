@@ -59,6 +59,14 @@ class MHPosteriorConfig:
 	#                     Well-conditioned on low-flow networks; total demand + floor are exact
 	#                     by construction; ε -> 0 reproduces the exact (ABC) posterior.
 	method: str = "pressure"
+	# Demand model / reference floor (applies to the demand methods M2, M5):
+	#   "base" = demands are base + Dirichlet split of the *extra* demand D-D0, so d >= d_base
+	#            (the thesis "base + extra" model).  On low-flow networks with small extra this
+	#            squeezes demands against the floor and makes the feasible region thin.
+	#   "zero" = demands are a Dirichlet split of the *total* demand D, so d >= 0 only (the
+	#            physical constraint).  Feasible region is the full simplex -> far easier to
+	#            sample; the base demands enter only as the Dirichlet concentration if desired.
+	demand_reference: str = "base"
 	sensor_noise_eps: float = 0.05     # sensor measurement-noise std (m of head), M2 soft likelihood
 	forward_max_iter: int = 40
 	forward_tol: float = 1e-10
@@ -88,6 +96,12 @@ class MHSamplingResult:
 	rhat_per_dimension: np.ndarray
 	max_rhat: float
 	num_chains: int
+	# Mean agreement: spread of the per-chain DEMAND means as a fraction of the pooled
+	# posterior std, per junction.  Small (<~0.2) => the posterior mean (the demand estimate)
+	# is trustworthy even when R-hat is elevated, because the chains agree on where the mass
+	# is centred; large => chains disagree on location and the mean itself is unreliable.
+	mean_disagreement_per_dim: np.ndarray
+	max_mean_disagreement: float
 	diagnostics: Dict[str, float]
 
 
@@ -153,6 +167,18 @@ class PosteriorScenarioSampler:
 		self.base_total = float(self.base_demands.sum())
 		self.measured_total_demand = float(measured_total_demand)
 		self.target_extra = float(self.measured_total_demand - self.base_total)
+
+		# Demand model: d = demand_offset + demand_scale * alpha, with alpha ~ Dirichlet on the
+		# simplex (sum alpha = 1).  "base" reproduces the thesis d >= d_base model; "zero" uses
+		# the physical d >= 0 with demands a split of the total D (fat feasible region).
+		if str(self.cfg.demand_reference).lower() == "zero":
+			self.demand_offset = np.zeros(self.n_junctions, dtype=float)
+			self.demand_scale = float(self.measured_total_demand)
+			self.demand_floor = np.zeros(self.n_junctions, dtype=float)
+		else:
+			self.demand_offset = self.base_demands.copy()
+			self.demand_scale = float(self.target_extra)
+			self.demand_floor = self.base_demands.copy()
 
 		self.fixed_heads: Dict[str, float] = {str(k): float(v) for k, v in measurement_heads.items()}
 		self.predictor_heads: Dict[str, float] = {
@@ -240,15 +266,81 @@ class PosteriorScenarioSampler:
 			if nid in self.node_idx:
 				self._base_head_vec[self.node_idx[nid]] = float(val)
 
-		if str(self.cfg.method).lower() == "demand":
+		method = str(self.cfg.method).lower()
+		if method == "demand":
 			self.dim = self.n_junctions - 1
 			if self.dim <= 0:
 				raise ValueError("Demand method needs at least 2 junctions.")
 			self.initial_x = np.zeros(self.dim, dtype=float)  # uniform shares
 			self.initial_warm = self._base_head_vec.copy()
+		elif method == "demand_exact":
+			self._setup_demand_exact()
 		else:
 			self.initial_x = self.initial_z
 			self.initial_warm = self.initial_hv
+
+	def _reservoir_adjacent_junctions(self) -> List[str]:
+		"""Junction ids that share a pipe with a reservoir (needed to close total demand)."""
+		res = set(str(r) for r in self.network.reservoirs.keys())
+		out: List[str] = []
+		seen: set = set()
+		for pipe in self.network.pipes.values():
+			s, t = str(pipe.start_node), str(pipe.end_node)
+			for a, b in [(s, t), (t, s)]:
+				if a in res and b in self.junction_idx and b not in seen:
+					out.append(b)
+					seen.add(b)
+		return out
+
+	def _setup_demand_exact(self) -> None:
+		"""Exact (ε=0) demand-space elimination.
+
+		Free coordinates are the demands at the free junctions; the demands at the sensor
+		junctions and one 'slack' junction are recovered by a mixed-boundary hydraulic solve
+		that imposes the sensor *pressures* exactly (h_S = M_S) and closes the total demand.
+		Because sensors are eliminated (not softened), adding sensors *reduces* the free
+		dimension — the opposite of the soft (ε>0) method.
+		"""
+		self.exact_sensor_juncs = [s for s in self.sensor_ids if s in self.junction_idx]
+		if not self.exact_sensor_juncs:
+			raise ValueError("demand_exact needs at least one sensor on a junction.")
+
+		res_adj = [j for j in self._reservoir_adjacent_junctions() if j not in set(self.exact_sensor_juncs)]
+		# Case (a): a reservoir-adjacent junction is free -> use it as the slack node that
+		#           closes the total-demand constraint.
+		# Case (b): every reservoir-adjacent junction is a sensor -> the fixed sensor pressure
+		#           already pins the reservoir outflow, so total demand is implied; no slack.
+		if res_adj:
+			self.exact_total_implied = False
+			self.exact_slack_junc = self._choose_central_node(res_adj) if len(res_adj) > 1 else res_adj[0]
+			dependent = set(self.exact_sensor_juncs) | {self.exact_slack_junc}
+		else:
+			self.exact_total_implied = True
+			self.exact_slack_junc = None
+			dependent = set(self.exact_sensor_juncs)
+
+		self.exact_dep_juncs = [j for j in self.junction_ids if j in dependent]
+		self.exact_free_juncs = [j for j in self.junction_ids if j not in dependent]
+		self.exact_free_jrows = np.array([self.junction_idx[j] for j in self.exact_free_juncs], dtype=int)
+		self.exact_dep_jrows = np.array([self.junction_idx[j] for j in self.exact_dep_juncs], dtype=int)
+		# Non-sensor junction pressures are the unknowns of the mixed-BC solve.
+		self.exact_unknown_juncs = [j for j in self.junction_ids if j not in set(self.exact_sensor_juncs)]
+		self.exact_unknown_ncols = np.array([self.node_idx[j] for j in self.exact_unknown_juncs], dtype=int)
+		self.exact_sensor_ncols = np.array([self.node_idx[s] for s in self.exact_sensor_juncs], dtype=int)
+		self.exact_sensor_targets = np.array([float(self.fixed_heads.get(s, self.predictor_heads.get(s, 0.0)))
+											  for s in self.exact_sensor_juncs], dtype=float)
+
+		self.dim = len(self.exact_free_juncs)
+		if self.dim <= 0:
+			raise ValueError("demand_exact: no free demands remain (too many sensors).")
+
+		# Initial free demands: uniform Dirichlet share over all junctions (interior/feasible).
+		d0_full = self.demand_offset + self.demand_scale / float(self.n_junctions)
+		self.initial_x = d0_full[self.exact_free_jrows].copy()
+		# Seed the mixed-BC solve with sensor pressures fixed at their targets.
+		h0 = self._base_head_vec.copy()
+		h0[self.exact_sensor_ncols] = self.exact_sensor_targets
+		self.initial_warm = h0
 
 	@staticmethod
 	def _infer_headloss_exponent(options: Dict[str, str]) -> float:
@@ -585,7 +677,7 @@ class PosteriorScenarioSampler:
 
 	def _evaluate_demand(self, y: np.ndarray, h_warm: np.ndarray) -> _StateEval:
 		alpha = self._shares_from_y(y)
-		d = self.base_demands + self.target_extra * alpha
+		d = self.demand_offset + self.demand_scale * alpha
 		h_init = h_warm if (h_warm is not None and np.all(np.isfinite(h_warm))) else self._base_head_vec
 		ok, h = self._forward_solve(d, h_init)
 		if not ok:
@@ -612,19 +704,133 @@ class PosteriorScenarioSampler:
 		st.warm = h
 		return st
 
+	# ---- Exact demand-space elimination (M5, ε=0) ---------------------------------------
+	def _mixed_bc_solve(self, theta: np.ndarray, h_init: np.ndarray) -> Tuple[bool, np.ndarray]:
+		"""Mixed-boundary hydraulic solve.
+
+		Fix the sensor pressures at their targets (h_S = M_S); solve for the non-sensor
+		junction pressures such that the free-junction demands equal `theta` and (unless the
+		total is implied by a reservoir-adjacent sensor) the total demand equals D.
+		Returns (converged, full head vector).
+		"""
+		h = h_init.copy()
+		h[self.exact_sensor_ncols] = self.exact_sensor_targets  # keep sensors pinned
+		ucols = self.exact_unknown_ncols
+		for _ in range(int(self.cfg.forward_max_iter)):
+			d_cur, J = self._demands_and_jacobian(h)
+			r_free = d_cur[self.exact_free_jrows] - theta
+			if self.exact_total_implied:
+				resid = r_free
+				Jsys = J[np.ix_(self.exact_free_jrows, ucols)]
+			else:
+				r_tot = float(np.sum(d_cur)) - self.measured_total_demand
+				resid = np.concatenate([r_free, [r_tot]])
+				A = J[np.ix_(self.exact_free_jrows, ucols)]
+				b = np.sum(J[:, ucols], axis=0)[None, :]
+				Jsys = np.concatenate([A, b], axis=0)
+			if float(np.max(np.abs(resid))) <= self.cfg.forward_tol:
+				return True, h
+			try:
+				step = np.linalg.solve(Jsys, -resid)
+			except np.linalg.LinAlgError:
+				return False, h
+			if not np.all(np.isfinite(step)):
+				return False, h
+			step = np.clip(step, -self.cfg.forward_max_step, self.cfg.forward_max_step)
+			h[ucols] += step
+		d_cur, _ = self._demands_and_jacobian(h)
+		r_free = d_cur[self.exact_free_jrows] - theta
+		ok = float(np.max(np.abs(r_free))) <= max(self.cfg.forward_tol * 100.0, 1e-8)
+		return ok, h
+
+	def _exact_dep_from_theta(self, theta: np.ndarray, h_warm: np.ndarray):
+		ok, h = self._mixed_bc_solve(theta, h_warm)
+		if not ok:
+			return False, h, None
+		d = self._demands_and_jacobian(h)[0]
+		return True, h, d
+
+	def _evaluate_demand_exact(self, theta: np.ndarray, h_warm: np.ndarray) -> _StateEval:
+		hw = h_warm if (h_warm is not None and np.all(np.isfinite(h_warm))) else self.initial_warm
+		ok, h, d = self._exact_dep_from_theta(theta, hw)
+		if not ok or d is None:
+			st = _StateEval(False, theta, 0.0, h, d if d is not None else np.zeros(self.n_junctions),
+							-np.inf, -np.inf, -np.inf, 0.0)
+			st.x = theta; st.warm = h
+			return st
+
+		# Feasibility: every demand at or above its floor (d >= d_base for "base", d >= 0 for "zero").
+		if np.any(d < self.demand_floor - self.cfg.demand_lb_tolerance):
+			st = _StateEval(False, theta, 0.0, h, d, -np.inf, -np.inf, -np.inf, 0.0)
+			st.x = theta; st.warm = h
+			return st
+
+		# Dirichlet prior on the reconstructed shares alpha = (d - offset) / scale.
+		if self.demand_scale <= self.cfg.simplex_eps * max(1.0, abs(self.measured_total_demand)):
+			log_dir = 0.0
+		else:
+			alpha = (d - self.demand_offset) / self.demand_scale
+			log_dir = float(self.log_dirichlet_norm + np.sum((self.alpha - 1.0) * np.log(np.maximum(alpha, 1e-300))))
+
+		# Change-of-variables (Gram) factor for the map free-demands theta -> full demand
+		# vector on the constraint manifold: d_full = [ theta (free) ; d_dep(theta) ], so the
+		# Gram matrix is G = I + (d_dep/d_theta)^T (d_dep/d_theta).
+		#
+		# Analytic d_dep/d_theta via the implicit function theorem on the mixed-BC solve.
+		# Unknowns are the non-sensor junction pressures h_u.  Residuals:
+		#   free-demand rows:  F_free(h) - theta = 0    (Jacobian A = J[free, u])
+		#   total row (case a): sum_j F_j(h) - D = 0    (Jacobian b = colsum J[:, u])
+		# Differentiating at the solution:  M (dh_u/dtheta) = [I_m ; 0],  M = [A ; b].
+		# Then d_dep/d_theta = J[dep, u] @ (dh_u/dtheta).
+		m = self.dim
+		_, J = self._demands_and_jacobian(h)
+		ucols = self.exact_unknown_ncols
+		A = J[np.ix_(self.exact_free_jrows, ucols)]
+		C = J[np.ix_(self.exact_dep_jrows, ucols)]
+		try:
+			if self.exact_total_implied:
+				dh_dtheta = np.linalg.solve(A, np.eye(m))
+			else:
+				b = np.sum(J[:, ucols], axis=0)[None, :]
+				M = np.concatenate([A, b], axis=0)              # (m+1) x (m+1)
+				rhs = np.zeros((m + 1, m), dtype=float); rhs[:m, :] = np.eye(m)
+				dh_dtheta = np.linalg.solve(M, rhs)              # (m+1) x m
+			ddep = C @ dh_dtheta                                  # (|dep|) x m
+		except np.linalg.LinAlgError:
+			st = _StateEval(False, theta, 0.0, h, d, -np.inf, log_dir, -np.inf, 0.0)
+			st.x = theta; st.warm = h
+			return st
+		G = np.eye(m) + ddep.T @ ddep
+		sign, logabs = np.linalg.slogdet(G)
+		log_jac = 0.5 * float(logabs) if sign > 0 else -np.inf
+		if not np.isfinite(log_jac):
+			st = _StateEval(False, theta, 0.0, h, d, -np.inf, log_dir, log_jac, 0.0)
+			st.x = theta; st.warm = h
+			return st
+
+		log_target = float(log_dir + log_jac)
+		st = _StateEval(True, theta, 0.0, h, d, log_target, log_dir, log_jac, 0.0)
+		st.x = theta; st.warm = h
+		return st
+
 	def _eval(self, x: np.ndarray, warm: object) -> _StateEval:
 		"""Method-agnostic state evaluation used by the proposal loops."""
-		if str(self.cfg.method).lower() == "demand":
+		method = str(self.cfg.method).lower()
+		if method == "demand":
 			return self._evaluate_demand(x, warm)
+		if method == "demand_exact":
+			return self._evaluate_demand_exact(x, warm)
 		st = self._evaluate_state(x, float(warm) if warm is not None else float(self.initial_hv))
 		st.x = st.z
 		st.warm = st.hv
 		return st
 
-	def _run_chain(self, x_init: np.ndarray, warm_init: object, rng: np.random.Generator) -> Dict[str, object]:
+	def _run_chain(self, x_init: np.ndarray, warm_init: object, rng: np.random.Generator,
+				   progress_cb=None) -> Dict[str, object]:
 		"""Run a single Metropolis-Hastings chain and return its samples and counters."""
 		total_iters = int(self.cfg.burn_in + self.cfg.num_samples * self.cfg.thin)
 		adapt_until = int(self.cfg.burn_in * self.cfg.adapt_until_fraction)
+		report_every = max(1, total_iters // 100)
 
 		current = self._eval(np.asarray(x_init, dtype=float).copy(), warm_init)
 		# An infeasible initial state (log_target = -inf) is fine: any feasible proposal
@@ -677,6 +883,9 @@ class PosteriorScenarioSampler:
 				samples_d.append(current.d.copy())
 				log_targets.append(float(current.log_target))
 
+			if progress_cb is not None and (it + 1) % report_every == 0:
+				progress_cb((it + 1) / float(total_iters))
+
 		return {
 			"samples_z": np.asarray(samples_z, dtype=float),
 			"samples_h": np.asarray(samples_h, dtype=float),
@@ -688,7 +897,7 @@ class PosteriorScenarioSampler:
 			"total_iters": total_iters,
 		}
 
-	def _run_ensemble(self, rng: np.random.Generator) -> List[Dict[str, object]]:
+	def _run_ensemble(self, rng: np.random.Generator, progress_cb=None) -> List[Dict[str, object]]:
 		"""Affine-invariant ensemble sampler (Goodman-Weare stretch move).
 
 		Runs an ensemble of K walkers.  A walker k is moved toward/away from a randomly
@@ -703,6 +912,7 @@ class PosteriorScenarioSampler:
 		treated as a chain for the split-R-hat convergence check.
 		"""
 		total_iters = int(self.cfg.burn_in + self.cfg.num_samples * self.cfg.thin)
+		report_every = max(1, total_iters // 100)
 		dim = self.dim
 		a = float(self.cfg.ensemble_stretch_a)
 		if a <= 1.0:
@@ -760,6 +970,9 @@ class PosteriorScenarioSampler:
 					samples_d[k].append(walkers[k].d.copy())
 					log_targets[k].append(float(walkers[k].log_target))
 
+			if progress_cb is not None and (it + 1) % report_every == 0:
+				progress_cb((it + 1) / float(total_iters))
+
 		results: List[Dict[str, object]] = []
 		for k in range(K):
 			results.append({
@@ -774,12 +987,12 @@ class PosteriorScenarioSampler:
 			})
 		return results
 
-	def sample(self) -> MHSamplingResult:
+	def sample(self, progress_callback=None) -> MHSamplingResult:
 		start_time = time.perf_counter()
 		if str(self.cfg.proposal).lower() == "ensemble":
 			# One ensemble of walkers; each walker trajectory becomes a "chain" for R-hat.
 			ens_rng = np.random.default_rng(self.cfg.rng_seed)
-			chain_results = self._run_ensemble(ens_rng)
+			chain_results = self._run_ensemble(ens_rng, progress_cb=progress_callback)
 		else:
 			num_chains = max(1, int(self.cfg.num_chains))
 			# Chain 0 starts at the predictor init; extra chains start over-dispersed around it
@@ -799,7 +1012,11 @@ class PosteriorScenarioSampler:
 					None if self.cfg.rng_seed is None else self.cfg.rng_seed + c
 				)
 				x0, warm0 = inits[c]
-				chain_results.append(self._run_chain(x0, warm0, chain_rng))
+				# Compose overall progress across the sequential chains.
+				cb = None
+				if progress_callback is not None:
+					cb = (lambda f, _c=c: progress_callback((_c + f) / num_chains))
+				chain_results.append(self._run_chain(x0, warm0, chain_rng, progress_cb=cb))
 		elapsed_seconds = float(time.perf_counter() - start_time)
 		num_chains = len(chain_results)
 
@@ -813,6 +1030,20 @@ class PosteriorScenarioSampler:
 		samples_h_arr = np.concatenate([r["samples_h"] for r in chain_results], axis=0)
 		samples_d_arr = np.concatenate([r["samples_d"] for r in chain_results], axis=0)
 		log_targets_arr = np.concatenate([r["log_targets"] for r in chain_results], axis=0)
+
+		# Mean agreement on the DEMANDS: spread of per-chain demand means / pooled posterior std.
+		# Unlike R-hat (which also reacts to variance mismatch and tails), this isolates whether
+		# the chains agree on the posterior *mean* — the quantity used as the demand estimate.
+		per_chain_d_means = np.array(
+			[r["samples_d"].mean(axis=0) for r in chain_results if r["samples_d"].size]
+		)
+		if per_chain_d_means.shape[0] >= 2 and samples_d_arr.size:
+			pooled_std = samples_d_arr.std(axis=0)
+			mean_disagree_vec = per_chain_d_means.std(axis=0) / np.maximum(pooled_std, 1e-12)
+			max_mean_disagreement = float(np.max(mean_disagree_vec))
+		else:
+			mean_disagree_vec = np.full(self.n_junctions, np.nan, dtype=float)
+			max_mean_disagreement = float("nan")
 
 		# Total ESS is the sum of per-chain ESS (independent chains contribute additively).
 		ess_vec = np.sum([self._effective_sample_size_per_dim(z) for z in per_chain_z], axis=0)
@@ -852,6 +1083,7 @@ class PosteriorScenarioSampler:
 			"median_ess_per_sec": med_ess_per_sec,
 			"num_chains": float(num_chains),
 			"max_rhat": max_rhat,
+			"max_mean_disagreement": max_mean_disagreement,
 		}
 
 		return MHSamplingResult(
@@ -872,6 +1104,8 @@ class PosteriorScenarioSampler:
 			rhat_per_dimension=rhat_vec,
 			max_rhat=max_rhat,
 			num_chains=num_chains,
+			mean_disagreement_per_dim=mean_disagree_vec,
+			max_mean_disagreement=max_mean_disagreement,
 			diagnostics=diagnostics,
 		)
 
@@ -961,6 +1195,7 @@ def sample_posterior_scenarios(
 	drop_demand_row_node: Optional[str] = None,
 	dirichlet_alpha: Optional[Dict[str, float]] = None,
 	config: Optional[MHPosteriorConfig] = None,
+	progress_callback=None,
 ) -> MHSamplingResult:
 	sampler = PosteriorScenarioSampler(
 		inp_path=inp_path,
@@ -972,4 +1207,4 @@ def sample_posterior_scenarios(
 		dirichlet_alpha=dirichlet_alpha,
 		config=config,
 	)
-	return sampler.sample()
+	return sampler.sample(progress_callback=progress_callback)

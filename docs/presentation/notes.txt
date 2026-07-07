@@ -1,0 +1,24 @@
+There are two different scenarios:
++ We are given pressure measurements $hat(h_S)$
++ We aren't given pressure measurements, we only know their position $S$
+
+&sum_(v != w) d_v  &&= - hat(d_w)
+
+$
+(d,q,h) in cal(M)(hat(d_w), S, hat(h_S)) <==> & d_w &&= hat(d_w) "and" d_(not w) >= 0 \
+& B q &&= d\
+& B^top h &&= phi.alt(q)\
+& h_S&&= hat(h_S)
+
+$
+
+our Problem reduces to 
+
+#align(center)[ #block(fill: blue.lighten(85%), inset: 20pt, radius: 4pt)[
+      $ 
+      max_(d,d') & thick norm(d-d') \
+      "s.t." & (d,q,h), (d',q',h') in cal(M)(hat(d_w), S, hat(h_S))\
+      & "for some" q,h,q',h':
+      $
+    ]
+]

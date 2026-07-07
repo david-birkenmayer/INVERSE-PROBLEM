@@ -2091,6 +2091,7 @@ class MainWindow(QtWidgets.QMainWindow):
 		self._apply_show_sensors_mode(self.show_sensors_mode.isChecked())
 		splitter.setStretchFactor(1, 1)
 		self._measurement_text_changed(self.measurement_list.text())
+		self._post_method_changed()  # set initial chains/walkers visibility for the default method
 
 		self.status_bar = self.statusBar()
 		self.output_button = QtWidgets.QPushButton("Show Output")
@@ -2234,10 +2235,12 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_method_combo = QtWidgets.QComboBox()
 		# (label, method, proposal) — data carried on each item.
 		self._post_methods = [
-			("M2 · Demand-space (Dirichlet, soft sensor) — ensemble", "demand", "ensemble"),
+			("M2 · Demand-space (Dirichlet, soft sensor ε) — ensemble", "demand", "ensemble"),
+			("M5 · Demand-space exact (ε=0, sensors eliminated) — ensemble", "demand_exact", "ensemble"),
 			("M1 · Pressure-space (Dirichlet, hard sensor) — ensemble", "pressure", "ensemble"),
 			("M1 · Pressure-space — random-walk", "pressure", "rwm"),
 			("M2 · Demand-space — random-walk", "demand", "rwm"),
+			("M5 · Demand-space exact — random-walk", "demand_exact", "rwm"),
 		]
 		for label, meth, prop in self._post_methods:
 			self.post_method_combo.addItem(label, userData=(meth, prop))
@@ -2324,24 +2327,44 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_num_chains = QtWidgets.QSpinBox()
 		self.post_num_chains.setRange(1, 64)
 		self.post_num_chains.setValue(4)
-		self.post_num_chains.setToolTip("Independent chains from dispersed starts; enables the R-hat convergence check (need ≥2).")
-		mh_form.addRow("Chains (R-hat)", self.post_num_chains)
+		self.post_num_chains.setToolTip("Random-walk only: independent chains from dispersed starts for the R-hat check (need ≥2).")
+		self.post_num_chains_row = mh_form.addRow("Chains (R-hat)", self.post_num_chains)
+		self._post_num_chains_label = mh_form.labelForField(self.post_num_chains)
+
+		self.post_ens_walkers = QtWidgets.QSpinBox()
+		self.post_ens_walkers.setRange(0, 500)
+		self.post_ens_walkers.setValue(0)
+		self.post_ens_walkers.setToolTip("Ensemble only: number of walkers (0 = auto ≈ 2·dim+2). More walkers → better R-hat and mixing in high dimension.")
+		mh_form.addRow("Walkers (0 = auto)", self.post_ens_walkers)
+		self._post_ens_walkers_label = mh_form.labelForField(self.post_ens_walkers)
 
 		self.post_proposal_std = self._new_double_spin(1e-4, 10.0, 0.05, decimals=4, step=0.01)
+		self.post_proposal_std.setToolTip("Random-walk step size — used only by the random-walk proposal (ignored by the ensemble).")
 		mh_form.addRow("Proposal std", self.post_proposal_std)
+		self._post_proposal_std_label = mh_form.labelForField(self.post_proposal_std)
 
 		self.post_use_gram = QtWidgets.QCheckBox()
 		self.post_use_gram.setChecked(True)
+		self.post_use_gram.setToolTip("Pressure method (M1) only: Gram-determinant change-of-variables. The demand method (M2) does not use it.")
 		mh_form.addRow("Robust Jacobian (Gram)", self.post_use_gram)
+		self._post_use_gram_label = mh_form.labelForField(self.post_use_gram)
 
 		self.post_penalty_a = self._new_double_spin(0.0, 100000.0, 1000.0, decimals=4, step=1.0)
+		self.post_penalty_a.setToolTip("Pressure method (M1) only: soft-floor penalty. The demand method (M2) enforces the floor exactly by construction.")
 		mh_form.addRow("Punish negativity (a)", self.post_penalty_a)
+		self._post_penalty_a_label = mh_form.labelForField(self.post_penalty_a)
 
 		outer.addWidget(mh_group)
 
 		self.post_run_button = QtWidgets.QPushButton("Run Posteriori")
 		self.post_run_button.clicked.connect(self._posteriori_run_clicked)
 		outer.addWidget(self.post_run_button)
+
+		self.post_progress = QtWidgets.QProgressBar()
+		self.post_progress.setRange(0, 100)
+		self.post_progress.setValue(0)
+		self.post_progress.setVisible(False)
+		outer.addWidget(self.post_progress)
 
 		self._post_view_scenarios_btn = QtWidgets.QPushButton("View Simulated Scenarios")
 		self._post_view_scenarios_btn.setEnabled(False)
@@ -4140,9 +4163,13 @@ class MainWindow(QtWidgets.QMainWindow):
 			self._post_auto_elim_node = max(res_adj, key=lambda n: (len(adj.get(n, [])), -int(n) if str(n).isdigit() else 0))
 		else:
 			self._post_auto_elim_node = None
-		label = self._post_auto_elim_node or "(none)"
-		self.post_elimination_node_label.setText(label)
-		self.plot.set_elimination_node(self._post_auto_elim_node)
+		# The demand method (M2) has no elimination node; keep it hidden there.
+		if self._post_current_method() == "demand":
+			self.post_elimination_node_label.setText("— (not used by demand method)")
+			self.plot.set_elimination_node(None)
+		else:
+			self.post_elimination_node_label.setText(self._post_auto_elim_node or "(none)")
+			self.plot.set_elimination_node(self._post_auto_elim_node)
 
 	def _posteriori_apply_default_extra_demand(self) -> None:
 		wdn = self.wdn_input.currentText().strip()
@@ -4172,15 +4199,49 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.plot.set_measurements(nodes)
 		self.plot.set_demands_overlay(self._post_base_demands, self._post_current_demands)
 		self.plot.set_highlight_node(None)
-		self.plot.set_elimination_node(self._post_auto_elim_node)
+		# The demand method (M2) has no elimination node.
+		self.plot.set_elimination_node(None if self._post_current_method() == "demand" else self._post_auto_elim_node)
 		self._update_post_plot_deltas()
 		self.plot.set_measurement_editable(self.post_scenario_editable.isChecked() and self.tabs.currentIndex() == self._post_tab_index)
 
+	def _post_current_method(self) -> str:
+		data = self.post_method_combo.currentData() if hasattr(self, "post_method_combo") else None
+		return (data or ("pressure", "ensemble"))[0]
+
 	def _post_method_changed(self) -> None:
-		data = self.post_method_combo.currentData() or ("pressure", "ensemble")
-		method = data[0]
-		# Sensor-noise ε only applies to the demand method (soft sensor likelihood).
+		method = self._post_current_method()
+		proposal = (self.post_method_combo.currentData() or ("pressure", "ensemble"))[1]
+		# Sensor-noise ε only applies to the soft demand method (M2); M5 is exact (ε=0).
 		self.post_sensor_eps.setEnabled(method == "demand")
+		# "Chains (R-hat)" is a random-walk knob; "Walkers" is the ensemble knob. Show only
+		# the relevant one for the selected proposal.
+		is_ens = (proposal == "ensemble")
+		# Gram Jacobian + soft-floor penalty are pressure-method (M1) only; both demand
+		# methods (M2 soft, M5 exact) use neither.
+		is_demand = method in ("demand", "demand_exact")
+
+		def _set_visible(widgets, visible):
+			for w in widgets:
+				if w is not None:
+					w.setVisible(visible)
+
+		# Proposal-specific: chains + proposal-std for random-walk; walkers for the ensemble.
+		_set_visible((self.post_num_chains, self._post_num_chains_label), not is_ens)
+		_set_visible((self.post_proposal_std, self._post_proposal_std_label), not is_ens)
+		_set_visible((self.post_ens_walkers, self._post_ens_walkers_label), is_ens)
+		# Method-specific: the Gram Jacobian and the soft-floor penalty are pressure-method (M1)
+		# only; the demand method (M2) uses neither (floor is exact by construction).
+		_set_visible((self.post_use_gram, self._post_use_gram_label), not is_demand)
+		_set_visible((self.post_penalty_a, self._post_penalty_a_label), not is_demand)
+		# The demand method (M2) has no elimination node — hide it from the label and plot.
+		if method == "demand":
+			self.post_elimination_node_label.setText("— (not used by demand method)")
+			if hasattr(self, "plot"):
+				self.plot.set_elimination_node(None)
+		else:
+			self.post_elimination_node_label.setText(self._post_auto_elim_node or "(none)")
+			if hasattr(self, "plot"):
+				self.plot.set_elimination_node(self._post_auto_elim_node)
 
 	def _posteriori_node_right_clicked(self, node_id: str) -> None:
 		if self.tabs.currentIndex() != getattr(self, "_post_tab_index", -1):
@@ -4471,6 +4532,16 @@ class MainWindow(QtWidgets.QMainWindow):
 			)
 			return
 
+		self.post_progress.setValue(0)
+		self.post_progress.setVisible(True)
+		self.post_run_button.setEnabled(False)
+		self.post_status.setText("Running sampler ...")
+		QtWidgets.QApplication.processEvents()
+
+		def _report_progress(frac: float) -> None:
+			self.post_progress.setValue(int(max(0.0, min(1.0, float(frac))) * 100))
+			QtWidgets.QApplication.processEvents()
+
 		try:
 			ns = runpy.run_path(os.path.join(ROOT_DIR, "mh_posteriori-scenario-gen.py"))
 			cfg_cls = ns["MHPosteriorConfig"]
@@ -4482,7 +4553,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			method, proposal = self.post_method_combo.currentData() or ("pressure", "ensemble")
 			# Demand method (M2) needs walkers started inside the feasible region -> small
 			# init dispersion; the pressure method tolerates a wider spread.
-			ens_disp = 0.3 if method == "demand" else 0.02
+			ens_disp = {"demand": 0.3, "demand_exact": 0.01}.get(method, 0.02)
 			cfg = cfg_cls(
 				burn_in=int(self.post_burn_in.value()),
 				num_samples=int(self.post_num_samples.value()),
@@ -4494,22 +4565,31 @@ class MainWindow(QtWidgets.QMainWindow):
 				proposal=proposal,
 				sensor_noise_eps=float(self.post_sensor_eps.value()),
 				ensemble_init_dispersion=ens_disp,
+				ensemble_walkers=int(self.post_ens_walkers.value()),
 			)
+			# The demand method (M2) has no elimination node; only the pressure method uses it.
+			elim_for_run = None if method == "demand" else self._post_auto_elim_node
 			result = run_sampler(
 				inp_path=inp_abs,
 				measurement_heads=measurement_heads,
 				measured_total_demand=total_demand_value,
 				predictor_heads=predictor_heads,
-				elimination_node=self._post_auto_elim_node,
+				elimination_node=elim_for_run,
 				config=cfg,
+				progress_callback=_report_progress,
 			)
 		except Exception as exc:
+			self.post_progress.setVisible(False)
+			self.post_run_button.setEnabled(True)
 			fake_cmd = ["posteriori", "mh", wdn]
 			fake_proc = subprocess.CompletedProcess(fake_cmd, 1, stdout="", stderr=str(exc))
 			self._store_output("Posteriori MH Output", fake_cmd, fake_proc)
 			QtWidgets.QMessageBox.warning(self, "Posteriori run failed", str(exc))
 			return
 
+		self.post_progress.setValue(100)
+		self.post_progress.setVisible(False)
+		self.post_run_button.setEnabled(True)
 		self._post_mh_result = result
 		self._post_mh_burn_in = int(self.post_burn_in.value())
 		try:
@@ -4543,6 +4623,7 @@ class MainWindow(QtWidgets.QMainWindow):
 			"median_ess_per_sec": float(result.median_ess_per_sec),
 			"num_chains": int(result.num_chains),
 			"max_rhat": float(result.max_rhat),
+			"max_mean_disagreement": float(getattr(result, "max_mean_disagreement", float("nan"))),
 			"diagnostics": {str(k): float(v) for k, v in result.diagnostics.items()},
 		}
 		_write_json(mh_out_path, mh_payload)
@@ -4550,11 +4631,17 @@ class MainWindow(QtWidgets.QMainWindow):
 		_rhat = float(result.max_rhat)
 		_rhat_txt = "n/a" if not math.isfinite(_rhat) else f"{_rhat:.3f}"
 		_rhat_flag = " ⚠converge" if (math.isfinite(_rhat) and _rhat > 1.01) else ""
+		# Mean agreement across chains on the demands: small => the demand estimate (posterior
+		# mean) is trustworthy even if R-hat is elevated.
+		_md = float(getattr(result, "max_mean_disagreement", float("nan")))
+		_md_txt = "n/a" if not math.isfinite(_md) else f"{_md:.2f}σ"
+		_md_flag = "" if (not math.isfinite(_md) or _md <= 0.25) else " ⚠"
 		self.post_status.setText(
 			f"Run complete. acceptance={float(result.acceptance_rate):.3f}, "
 			f"min_ess/s={float(result.min_ess_per_sec):.2f}, "
 			f"median_ess={float(result.median_ess):.2f}, "
 			f"R-hat={_rhat_txt}{_rhat_flag}, "
+			f"mean-agree={_md_txt}{_md_flag}, "
 			f"output={os.path.basename(mh_out_path)}"
 		)
 		self.status_bar.showMessage("Posteriori run completed.")

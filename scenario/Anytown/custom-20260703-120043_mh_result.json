@@ -33,5 +33,6 @@
   "num_samples": 12000,
   "proposal_std_final": 0.23916303137345352,
   "punished_rate": 0.99975,
-  "scenario": "custom-20260703-120043"
+  "scenario": "custom-20260703-120043",
+  "scenario_hash": "9c497e260e381b70e0c32c14b6d4d1edbf15ebec38d25a305f020b8085bfc146"
 }

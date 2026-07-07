@@ -86,9 +86,26 @@ on Kadu, M1 is frozen (acc 0, R-hat 1e9) while **M2 mixes** (acc 0.24, R-hat 1.1
 match the oracle to 0.08σ on well-conditioned Alperovits. Both `method`s work with either
 `proposal`; the proposal loops are method-agnostic via `_eval`/`_StateEval.x`/`.warm`. The
 GUI posteriori tab has a "Sampling Method" selector (above Scenario Choice) + an ε control.
-Caveat: M2's internal HW forward solve (tol 1e-10) vs EPANET (accuracy 1e-3) diverge on
-low-flow Kadu, so the M2-vs-EPANET-ABC gap there is a solver-consistency artifact, not an
-M2 bug (they agree on Alperovits). A same-hydraulics oracle would isolate this.
+M2 validated on Kadu: against a *same-hydraulics* ABC oracle (`abc_reference.py --hydraulics
+internal`, which forward-solves with the sampler's own convex Newton instead of EPANET) M2
+matches to **0.07σ mean / 0.20σ max** across all 24 junctions. The larger gap vs the *EPANET*
+oracle (2.6σ) was purely a solver-consistency artifact — EPANET's 1e-3 flow accuracy vs the
+internal 1e-10, amplified by Kadu's demand cancellation — not an M2 defect. (M2 R-hat on
+Kadu dim-23 was ~1.45 at 8k samples; the posterior mean already matches, more samples/walkers
+tighten R-hat.)
+
+**Exact demand method (`cfg.method="demand_exact"`, M5, ε=0).** Samples the *free* demands
+(dim `n−|S|−1`, or `n−|S|` when a reservoir-adjacent junction is a sensor so total demand is
+implied); the sensor and slack demands are recovered by a **mixed-boundary hydraulic solve**
+(`_mixed_bc_solve`) that imposes sensor pressures *exactly* and closes total demand. Target =
+Dirichlet on the reconstructed shares + a Gram change-of-variables factor computed
+analytically via the implicit-function theorem (`d_dep/d_theta = C·M⁻¹`, reusing the demand
+Jacobian). Unlike the soft method, **sensors are eliminated, so more sensors reduce the free
+dimension.** Validated on Alperovits to **0.01σ** vs the ABC oracle (most accurate of the
+three methods). Caveat: on genuinely thin scenarios (low-flow Kadu, small per-node extra, 4
+tight sensors) it mixes as poorly as M2 (acc ~0.07, R-hat ~3.5) — because there the
+difficulty is the small *feasible* region (demands near their floor), not ε-softness, so no
+local sampler escapes it. GUI exposes M5 as a method preset (ε control hidden, ε=0).
 
 **Proposal mechanism (`cfg.proposal`).** `"rwm"` = isotropic random-walk Metropolis
 (default, legacy); `"ensemble"` = affine-invariant ensemble / stretch-move sampler
