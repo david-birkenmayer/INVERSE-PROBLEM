@@ -62,7 +62,10 @@ across all junctions — this is what makes the scenario law spread-out and non-
 ## The MCMC posterior sampler (`mh_posteriori-scenario-gen.py`)
 
 Full derivation in `docs/chapters/7_mcmc-posteriori-scenario-generation.typ`. Samples the
-posterior `π(h,d | M)` over scenarios consistent with a measurement `M`.
+posterior `π(h,d | M)` over scenarios consistent with a measurement `M`. **Three methods**
+exist (`cfg.method`, see below): M1 pressure-coordinate (original), M2 demand-space soft-sensor,
+M5 demand-space exact. Each pairs with a `cfg.proposal` (rwm / ensemble). The bullets below
+describe the **original M1**; M2/M5 are in the "Sampling method" paragraph.
 
 - **State** = reduced pressure vector `z = h_F` over free (unobserved, non-eliminated)
   nodes. Sensor pressures are fixed; one **elimination node** `v` is recovered from the
@@ -107,6 +110,30 @@ tight sensors) it mixes as poorly as M2 (acc ~0.07, R-hat ~3.5) — because ther
 difficulty is the small *feasible* region (demands near their floor), not ε-softness, so no
 local sampler escapes it. GUI exposes M5 as a method preset (ε control hidden, ε=0).
 
+**Demand model / floor (`cfg.demand_reference`, applies to M2 & M5).** `"base"` (default) =
+demands are `d_base + Dirichlet split of the extra D−D0`, so `d ≥ d_base` (the thesis model).
+`"zero"` = demands are a Dirichlet split of the *total* D, so only `d ≥ 0` (physical). The
+`d ≥ d_base` floor is not physically well-motivated (demands can drop below base), *but*
+switching to `"zero"` **makes mixing worse**, not better (Kadu 4-sensor: R-hat 1.6→2.6 at
+ε=0.2, 3.4→6.9 at ε=0.05). Reason: the floor also acts as an *informative prior* that
+concentrates demands near base (near the truth); dropping it diffuses the prior over a ~2×
+larger simplex while the sensor-consistent sliver stays equally thin, so the sliver is a
+smaller fraction of the explored space. The principled middle path (not yet implemented) is a
+**base-centred soft Dirichlet** — `α ~ Dirichlet(κ·base/base_total)`, `d = D·α`, support
+`d ≥ 0` — which keeps the informative centre (aids mixing, precise estimates) without the
+arbitrary hard wall; `κ` tunes trust in the base.
+
+**Identifiability limit (the real Kadu story, not a sampler bug).** On genuinely
+tightly-constrained questions — many sensors + small `ε` + small per-node extra demand on a
+low-flow network — *every* local sampler (M1/M2/M5, rwm/ensemble) mixes badly, because the
+measurement-consistent demand region is genuinely small: the demands are only weakly
+identified. This is physics, not a bug (both M2 and M5 agree it's hard). The practical lever
+for M2 is **`sensor_noise_eps`**: 5 cm (0.05) is unrealistically tight for a low-flow network;
+a realistic **0.2–0.5 m** widens the posterior appropriately and makes it samplable (Kadu
+4-sensor: R-hat 3.4→1.3 as ε 0.05→0.5). For the genuinely-thin regime the honest options are
+larger ε, a base-centred prior, tempering/SMC, or reporting the wide posterior as the
+identifiability result.
+
 **Proposal mechanism (`cfg.proposal`).** `"rwm"` = isotropic random-walk Metropolis
 (default, legacy); `"ensemble"` = affine-invariant ensemble / stretch-move sampler
 (Goodman-Weare), gradient-free and reusing the same target+feasibility. On the thin
@@ -117,8 +144,8 @@ near the truth) while the ensemble mixes (acceptance ~37%, R-hat ~1.03, min-ESS 
 small (`ensemble_init_dispersion≈0.02`) so walkers start *inside* the feasible region;
 walkers auto-set to `max(2·dim+2, 8)`. Prefer `"ensemble"` for real runs.
 
-**Low-flow conditioning limit (why Kadu fails).** The sampler works in pressure coordinates
-and *reconstructs* demands from head differences (`q ∝ |Δh|^(1/n)`). On low-flow networks
+**Low-flow conditioning limit (why the *pressure* method M1 fails on Kadu).** M1 works in
+pressure coordinates and *reconstructs* demands from head differences (`q ∝ |Δh|^(1/n)`). On low-flow networks
 whose nodal demands are small net differences of larger pipe flows (Kadu: demands ~0.012,
 some pipe `|Δh|` ~4e-4), this reconstruction is ill-conditioned: the sampler's demands
 differ from EPANET's by ~the demand magnitude (mean 0.009 vs demand 0.012), so the *true*
@@ -136,12 +163,19 @@ any future sampler change; re-run after touching the sampler.
 
 **Convergence diagnostics.** `MHSamplingResult` reports mixing/efficiency, not just raw
 sample count: `min_ess`/`median_ess` (effective sample size, Geweke IPS estimator),
-`elapsed_seconds` + `min_ess_per_sec` (the right cross-config efficiency metric), and, when
-`cfg.num_chains ≥ 2`, a split-R-hat (`rhat_per_dimension`, `max_rhat`). Extra chains start
-over-dispersed around the predictor init (`cfg.chain_init_dispersion`). Read R-hat as:
-≈1.00 mixed, >~1.01 not converged, huge = chains stuck at their starts (the classic
-low-acceptance failure). The GUI's posteriori tab has a "Chains (R-hat)" control and shows
-`min_ess/s` + R-hat (with a ⚠ when >1.01) in the run status line.
+`elapsed_seconds` + `min_ess_per_sec` (the right cross-config efficiency metric), a split-R-hat
+(`rhat_per_dimension`, `max_rhat`; for the ensemble each walker is a chain), and
+`max_mean_disagreement` (spread of the per-chain *demand* means as a fraction of the pooled
+posterior σ). Read R-hat as: ≈1.00 mixed, >~1.01 not converged, huge = chains stuck at their
+starts (classic low-acceptance failure). **`max_mean_disagreement` is the "can I trust the
+estimate anyway" gauge:** the posterior *mean* (the demand estimate — Bayes-optimal under L²)
+converges faster than the full distribution, so at moderate R-hat (≲1.5) a small mean-disagree
+(<~0.2σ) means the mean is reliable even though tails/quantiles aren't; a large one (stuck
+walker) means even the mean is suspect. The GUI status line shows `min_ess/s`, R-hat (⚠ if
+>1.01), and `mean-agree` (⚠ if >0.25σ). GUI controls are proposal/method-aware: **"Walkers"**
+for the ensemble vs **"Chains (R-hat)"** for random-walk (only one shown), ε only for M2,
+Gram/penalty only for M1; a **progress bar** reflects real sampler progress via a
+`progress_callback` threaded through `sample()`.
 
 **Reservoir heads are fixed, not sampled.** Reservoir heads are known boundary conditions,
 so `__init__` adds them to `fixed_heads` (from `predictor_heads`, else the `.inp` base head).
