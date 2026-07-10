@@ -67,6 +67,15 @@ class MHPosteriorConfig:
 	#            physical constraint).  Feasible region is the full simplex -> far easier to
 	#            sample; the base demands enter only as the Dirichlet concentration if desired.
 	demand_reference: str = "base"
+	# Gaussian-prior demand methods:
+	#   method="gaussian"     (M3) = Gaussian prior N(d_base, diag((prior_sigma*scale)^2)) on the
+	#                                raw demands, hard total (Sigma d = D via a linear slack),
+	#                                soft sensor likelihood, forward-solved pressures.  Sampled
+	#                                by MCMC (the full non-linearised posterior).
+	#   method="gaussian_map" (MAP) = same model, but returns the posterior mode via Gauss-Newton
+	#                                (scipy least_squares) plus a Laplace-Gaussian sample cloud.
+	# prior_sigma is the relative prior std: sigma_j = prior_sigma * max(d_base_j, mean demand).
+	prior_sigma: float = 0.5
 	sensor_noise_eps: float = 0.05     # sensor measurement-noise std (m of head), M2 soft likelihood
 	forward_max_iter: int = 40
 	forward_tol: float = 1e-10
@@ -275,9 +284,48 @@ class PosteriorScenarioSampler:
 			self.initial_warm = self._base_head_vec.copy()
 		elif method == "demand_exact":
 			self._setup_demand_exact()
+		elif method in ("gaussian", "gaussian_map"):
+			self._setup_gaussian()
 		else:
 			self.initial_x = self.initial_z
 			self.initial_warm = self.initial_hv
+
+	def _setup_gaussian(self) -> None:
+		"""Gaussian-prior demand model (M3 / MAP).
+
+		Raw demands d in R^n with a Gaussian prior N(mu, Sigma), mu = base demands and
+		Sigma = diag(sigma_j^2), sigma_j = prior_sigma * max(d_base_j, mean demand).  The total
+		demand is imposed hard by a linear slack: the free coordinates are the demands at all
+		junctions except one 'slack' junction, whose demand closes Sigma d = D.  Pressures are
+		forward-solved and the sensor pressures enter through a Gaussian likelihood; d >= 0 is a
+		soft (rarely-binding) physical constraint.
+		"""
+		mean_scale = float(self.base_total) / float(self.n_junctions) if self.n_junctions else 1.0
+		self.gauss_mean = self.base_demands.copy()
+		sig = float(self.cfg.prior_sigma) * np.maximum(self.base_demands, mean_scale)
+		self.gauss_sigma = np.maximum(sig, 1e-9)
+		# Slack junction = largest base demand (least likely to be driven negative).
+		self.gauss_slack_jrow = int(np.argmax(self.base_demands))
+		self.gauss_free_jrows = np.array(
+			[j for j in range(self.n_junctions) if j != self.gauss_slack_jrow], dtype=int
+		)
+		self.dim = self.n_junctions - 1
+		if self.dim <= 0:
+			raise ValueError("Gaussian method needs at least 2 junctions.")
+		# Initial demands: base scaled to the measured total (positive, sums to D).
+		if self.base_total > 0:
+			d0 = self.base_demands * (self.measured_total_demand / self.base_total)
+		else:
+			d0 = np.full(self.n_junctions, self.measured_total_demand / self.n_junctions)
+		self.initial_x = d0[self.gauss_free_jrows].copy()
+		self.initial_warm = self._base_head_vec.copy()
+
+	def _gauss_full_demand(self, x: np.ndarray) -> np.ndarray:
+		"""Map free demands x -> full demand vector, closing Sigma d = D at the slack junction."""
+		d = np.empty(self.n_junctions, dtype=float)
+		d[self.gauss_free_jrows] = x
+		d[self.gauss_slack_jrow] = self.measured_total_demand - float(np.sum(x))
+		return d
 
 	def _reservoir_adjacent_junctions(self) -> List[str]:
 		"""Junction ids that share a pipe with a reservoir (needed to close total demand)."""
@@ -704,6 +752,37 @@ class PosteriorScenarioSampler:
 		st.warm = h
 		return st
 
+	# ---- Gaussian-prior demand method (M3) ----------------------------------------------
+	def _gauss_log_prior(self, d: np.ndarray) -> float:
+		z = (d - self.gauss_mean) / self.gauss_sigma
+		return -0.5 * float(np.dot(z, z))
+
+	def _evaluate_gaussian(self, x: np.ndarray, h_warm: np.ndarray) -> _StateEval:
+		d = self._gauss_full_demand(x)
+		# Soft physical constraint d >= 0 (rarely binds for a base-centred Gaussian).
+		if np.any(d < -self.cfg.demand_lb_tolerance):
+			st = _StateEval(False, x, 0.0, h_warm if h_warm is not None else self._base_head_vec,
+							d, -np.inf, -np.inf, -np.inf, 0.0)
+			st.x = x; st.warm = st.h
+			return st
+		h_init = h_warm if (h_warm is not None and np.all(np.isfinite(h_warm))) else self._base_head_vec
+		ok, h = self._forward_solve(d, h_init)
+		if not ok:
+			st = _StateEval(False, x, 0.0, h, d, -np.inf, -np.inf, -np.inf, 0.0)
+			st.x = x; st.warm = h
+			return st
+		log_prior = self._gauss_log_prior(d)
+		if self.sensor_node_idxs.size:
+			resid = h[self.sensor_node_idxs] - self.sensor_targets
+			eps = max(float(self.cfg.sensor_noise_eps), 1e-9)
+			log_lik = -0.5 * float(np.sum(resid ** 2)) / (eps * eps)
+		else:
+			log_lik = 0.0
+		log_target = float(log_prior + log_lik)
+		st = _StateEval(True, x, 0.0, h, d, log_target, log_prior, log_lik, 0.0)
+		st.x = x; st.warm = h
+		return st
+
 	# ---- Exact demand-space elimination (M5, ε=0) ---------------------------------------
 	def _mixed_bc_solve(self, theta: np.ndarray, h_init: np.ndarray) -> Tuple[bool, np.ndarray]:
 		"""Mixed-boundary hydraulic solve.
@@ -820,6 +899,8 @@ class PosteriorScenarioSampler:
 			return self._evaluate_demand(x, warm)
 		if method == "demand_exact":
 			return self._evaluate_demand_exact(x, warm)
+		if method in ("gaussian", "gaussian_map"):
+			return self._evaluate_gaussian(x, warm)
 		st = self._evaluate_state(x, float(warm) if warm is not None else float(self.initial_hv))
 		st.x = st.z
 		st.warm = st.hv
@@ -987,7 +1068,88 @@ class PosteriorScenarioSampler:
 			})
 		return results
 
+	def _run_map(self, progress_callback=None) -> MHSamplingResult:
+		"""Gaussian-prior MAP via Gauss-Newton + a Laplace-Gaussian sample cloud.
+
+		Minimises  ½‖(h_S(d)-M_S)/ε‖² + ½‖(d-μ)/σ‖²  over the free demands (total closed by the
+		slack), then approximates the posterior near the mode by N(x_MAP, (JᵀJ)⁻¹) using the
+		residual Jacobian, and draws `num_samples` from it so the result plugs into the same
+		display path as the samplers.
+		"""
+		from scipy import optimize
+		start_time = time.perf_counter()
+		eps = max(float(self.cfg.sensor_noise_eps), 1e-9)
+		sig_free = self.gauss_sigma  # per-junction prior std (full vector)
+		big = 1e3
+
+		def residuals(x):
+			d = self._gauss_full_demand(x)
+			ok, h = self._forward_solve(d, self._base_head_vec.copy())
+			sensor_res = (h[self.sensor_node_idxs] - self.sensor_targets) / eps if self.sensor_node_idxs.size else np.zeros(0)
+			prior_res = (d - self.gauss_mean) / sig_free
+			# Soft d>=0 at the slack node (free demands are bounded >=0 below).
+			slack_pen = np.array([big * max(0.0, -d[self.gauss_slack_jrow])])
+			r = np.concatenate([sensor_res, prior_res, slack_pen])
+			if not ok:
+				r = r + big  # penalise non-converged solves
+			return r
+
+		x0 = np.asarray(self.initial_x, dtype=float)
+		res = optimize.least_squares(residuals, x0, bounds=(0.0, np.inf), method="trf", xtol=1e-12, ftol=1e-12)
+		if progress_callback is not None:
+			progress_callback(0.7)
+		x_map = res.x
+		d_map = self._gauss_full_demand(x_map)
+		_, h_map = self._forward_solve(d_map, self._base_head_vec.copy())
+
+		# Laplace covariance in free coordinates: (JᵀJ)⁻¹ from the residual Jacobian at the mode.
+		J = np.asarray(res.jac, dtype=float)
+		H = J.T @ J
+		try:
+			cov = np.linalg.inv(H + 1e-9 * np.eye(H.shape[0]))
+			cov = 0.5 * (cov + cov.T)
+			L = np.linalg.cholesky(cov + 1e-12 * np.eye(cov.shape[0]))
+		except np.linalg.LinAlgError:
+			L = np.diag(np.sqrt(np.maximum(np.diag(np.linalg.pinv(H)), 0.0)))
+
+		rng = np.random.default_rng(self.cfg.rng_seed)
+		n = max(1, int(self.cfg.num_samples))
+		samples_d = np.empty((n, self.n_junctions), dtype=float)
+		samples_h = np.empty((n, self.n_nodes), dtype=float)
+		for i in range(n):
+			xs = x_map + L @ rng.normal(size=x_map.size)
+			d = self._gauss_full_demand(xs)
+			samples_d[i] = d
+			ok, h = self._forward_solve(d, h_map)
+			samples_h[i] = h
+		if progress_callback is not None:
+			progress_callback(1.0)
+
+		elapsed = float(time.perf_counter() - start_time)
+		diagnostics = {
+			"method": "gaussian_map",
+			"map_cost": float(res.cost),
+			"map_optimality": float(res.optimality),
+			"map_iterations": float(res.nfev),
+			"elapsed_seconds": elapsed,
+			"measured_total_demand": self.measured_total_demand,
+		}
+		# MAP samples are i.i.d. from the Laplace Gaussian -> convergence diagnostics are trivial.
+		return MHSamplingResult(
+			samples_z=samples_d[:, self.gauss_free_jrows], samples_h=samples_h, samples_d=samples_d,
+			log_targets=np.zeros(n), acceptance_rate=1.0, infeasible_rate=0.0, punished_rate=0.0,
+			proposal_std_final=float("nan"), ess_per_dimension=np.full(self.dim, float(n)),
+			min_ess=float(n), median_ess=float(n), elapsed_seconds=elapsed,
+			min_ess_per_sec=float(n) / elapsed if elapsed > 0 else 0.0,
+			median_ess_per_sec=float(n) / elapsed if elapsed > 0 else 0.0,
+			rhat_per_dimension=np.ones(self.dim), max_rhat=1.0, num_chains=1,
+			mean_disagreement_per_dim=np.zeros(self.n_junctions), max_mean_disagreement=0.0,
+			diagnostics=diagnostics,
+		)
+
 	def sample(self, progress_callback=None) -> MHSamplingResult:
+		if str(self.cfg.method).lower() == "gaussian_map":
+			return self._run_map(progress_callback)
 		start_time = time.perf_counter()
 		if str(self.cfg.proposal).lower() == "ensemble":
 			# One ensemble of walkers; each walker trajectory becomes a "chain" for R-hat.

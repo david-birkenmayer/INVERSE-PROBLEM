@@ -40,7 +40,6 @@
 #show strong: it => text(fill: black, font: "Red Hat Text", weight: "bold", it.body)
 #show emph: it => text(fill: red, style: "italic", it.body)
 
-
 == Steady state model
 
 #slide(repeat: 5, self => [
@@ -130,10 +129,7 @@
 
   #colbreak()
   #uncover("1-")[
-    *Insert Image* \
-  ]
-  #uncover("3-")[
-    *Sensor Likelihoods* \
+    #align(center)[#image("alperovits_measurement.png", width: 82%)]
   ]
 ]
 
@@ -148,9 +144,9 @@
   #columns(2, gutter: 8pt)[
   #v(0.5em)
   #uncover("1-")[
-    *Assumptions:* 
+    *Assumptions:*
     - _prior distribution_ $P$ on the state space $S$
-    - _sensor likelihood_ $P(s | z)$
+    - _sensor likelihood_ $P(z | s)$
     - _measurement sites_ $cal(Y) subs cal(J)$ (hexagons)
     - _observation_ $z = (D^z, h^z_cal(Y) )$
   ]
@@ -165,7 +161,7 @@
 
   #uncover("4-")[
     *Why do we want this:* \
-    - Can measure how good a prediction $F(s)$ is, by comparing it to the sampled results
+    - Can measure how good a prediction $F(z)$ is, by comparing it to the sampled results
     - Shows how confident we can be in the prediction in certain areas
     - Averaging the samples yields a predictor itself!
   ]
@@ -175,69 +171,44 @@
 
 ])
 
-== The sensor likelihood
+== Prior and sensor likelihood
 
-#slide(repeat: 5, self => [
+#slide(repeat: 4, self => [
   #let (uncover, only) = utils.methods(self)
 
   #v(0.5em)
   #uncover("1-")[
-    *Bayes:* the measurement _reweights_ the prior through a likelihood
-    $ P_z (s) prop underbrace(P(z | s), "sensor model") dot underbrace(P(s), "prior") $
+    *Bayes Rule:* the measurement _reweights_ the prior $P_z (s) prop underbrace(P(z | s), "sensor likelihood") dot underbrace(P(s), "prior")$
   ]
+
   #uncover("2-")[
-    - _prior_ $P(s)$: our demand model (Dirichlet) --- fixed
-    - _likelihood_ $P(z | s)$: encodes what we believe about _sensor noise_
-    - total demand $D^s = D^z$ imposed _exactly_; only pressures $h_cal(Y)$ are softened
+    *Prior* defined on the demands
+    - Dirichlet: Given $d^0$ and $Delta>0$, uniform distribution on simplex ${d>= d^0 : bb(1)^top d <= bb(1)^top d + Delta}$
+    - Gaussian: Normal distribution around $d^0$ with a std
   ]
+
   #uncover("3-")[
-    *Three choices of $P(z | s)$ --- one family, parameter $eps$:*
+    *Sensor likelihood function $K_epsilon$:*
+    - $P(z | s)$: encodes what we believe about _sensor noise_
+    - We split: $quad quad quad P(z | s) quad prop quad underbrace(delta(D^z - D^s), "total demand: exact")
+      dot underbrace(K_eps (h^s_cal(Y) - h^z_cal(Y)), "pressures: soft") $
+    - Three choices for sensor likelihood 
     #table(
       columns: 3,
       stroke: none,
-      table.header([kernel], [$P(z | s) prop$], [noise model]),
-      [_Dirac_],   [$delta(h^s_cal(Y) - h^z_cal(Y))$], [noiseless],
-      [_uniform_], [$bb(1)[||h^s_cal(Y) - h^z_cal(Y)|| < eps]$], [bounded $eps$],
-      [_Gaussian_],[$exp(-1/(2 eps^2) ||h^s_cal(Y) - h^z_cal(Y)||^2)$], [Gaussian $eps$],
+
+      [_Dirac_],   [$delta(h^s_cal(Y) - h^z_cal(Y))$], [no sensor error -- hard constraint],
+      [_Uniform_], [$bb(1)[||h^s_cal(Y) - h^z_cal(Y)|| < eps]$], [sensor error bunded by $eps$],
+      [_Gaussian_],[$exp(-1/(2 eps^2) ||h^s_cal(Y) - h^z_cal(Y)||^2)$], [gaussian sensor error with std $eps$],
     )
   ]
   #uncover("4-")[
-    - Dirac is the _exact_ posterior we want --- but lives on a _measure-zero manifold_ (cannot sample naively)
-    - $eps > 0$ softens it into a samplable band; both uniform and Gaussian $-> $ Dirac as $eps -> 0$
-  ]
-  #uncover("5-")[
-    $-->$ next: _MAP_ uses the Gaussian row, _ABC_ uses the uniform row
+    - $eps > 0$ softens; both Uniform and Gaussian $->$ Dirac as $eps -> 0$
+    - Question: Which combination of Prior and Sensor likelihood is best?
   ]
 ])
 
-== Open questions
-
-#slide(repeat: 3, self => [
-  #let (uncover, only) = utils.methods(self)
-
-  #columns(2, gutter: 8pt)[
-  #v(0.5em)
-  #uncover("1-")[
-    *Questions:* \
-    - resonable choice for $P$?
-    - soften the conditions to account for sensor noise?
-    - how do we calculate $P_z$?
-  ]
-  
-  #uncover("2-")[
-    *blah:* \
-  ]
-
-
-  #colbreak()
-  #uncover("3-")[
-    *blah:* \
-  ]
-]
-
-])
-
-== Maximum A-Posteriori Estimation (MAP)
+== Maximum A-Posteriori Estimation (MAP) @Shao2019
 
 #slide(repeat: 5, self => [
   #let (uncover, only) = utils.methods(self)
@@ -278,7 +249,7 @@
 ])
 
 
-== Approximate Bayesian Computation (ABC)
+== Approximate Bayesian Computation (ABC) @Sunnaker2013
 
 #slide(repeat: 3, self => [
   #let (uncover, only) = utils.methods(self)
@@ -337,36 +308,54 @@
   ]
 
 
-  #colbreak()
-  #uncover("3-")[
-    *blah:* \
-  ]
-]
 ])
 
 == My results
 
-#slide(repeat: 3, self => [
+#slide(repeat: 4, self => [
   #let (uncover, only) = utils.methods(self)
 
-  #columns(2, gutter: 8pt)[
+  #columns(2, gutter: 20pt)[
   #v(0.5em)
   #uncover("1-")[
-    *blah:* 
+    *Correctness:* every sampler cross-validated against an independent _ABC oracle_ \
+    (Alperovits, agreement in posterior-$sigma$):
+    #v(0.4em)
+    #table(
+      columns: 2,
+      stroke: none,
+      align: (left, center),
+      table.header([sampler], [gap to oracle]),
+      [_MAP_ (Gaussian, Laplace)],       [$0.04 sigma$],
+      [_MCMC_ pressure-space],           [$0.08 sigma$],
+      [_MCMC_ demand-space (soft $eps$)], [$0.07 sigma$],
+      [_MCMC_ demand-space (exact, $eps=0$)], [$0.01 sigma$],
+      [_MCMC_ Gaussian prior],           [$0.07 sigma$],
+    )
+    #v(0.2em)
+    $-->$ MAP $approx$ MCMC-mean when near-Gaussian; MCMC recovers the _non-Gaussian_ shape.
   ]
-  
-  #uncover("2-")[
-    *blah:* \
-  ]
-
 
   #colbreak()
+  #v(0.5em)
+  #uncover("2-")[
+    *Making MCMC mix:*
+    - an _affine-invariant ensemble_ proposal mixes on thin, high-dimensional posteriors where plain random-walk freezes
+  ]
   #uncover("3-")[
-    *blah:* \
+    *Conditioning:*
+    - sampling in _demand coordinates_ (not pressures) removes the ill-conditioning on _low-flow_ networks
+  ]
+  #uncover("4-")[
+    *Limits (honest):*
+    - many tight sensors + low flow $-->$ a _genuinely_ thin posterior: the demands are weakly identified (physics, not a bug)
+    - sensor noise $eps$ is the practical lever
   ]
 ]
 
 ])
+
+#bibliography("refs.bib")
 
 == This is the end
 #v(10em)
@@ -374,10 +363,19 @@
 #align(center)[
 Thank you for your attention!
 ]
+#set text(15pt)
+#align(center)[
+Shoutout to Fabian for the Slide design
+]
+
+
 
 
 
 == Slide
+
+@Gelman2013
+@Bishop2006
 
 #slide(repeat: 3, self => [
   #let (uncover, only) = utils.methods(self)

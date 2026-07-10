@@ -110,6 +110,21 @@ tight sensors) it mixes as poorly as M2 (acc ~0.07, R-hat ~3.5) — because ther
 difficulty is the small *feasible* region (demands near their floor), not ε-softness, so no
 local sampler escapes it. GUI exposes M5 as a method preset (ε control hidden, ε=0).
 
+**Gaussian-prior methods (`cfg.method="gaussian"` = M3, `="gaussian_map"` = MAP).** Prior
+`N(d_base, diag(σ²))`, `σ_j = cfg.prior_sigma·max(d_base_j, mean demand)`, on the **raw
+demands** (no simplex/softmax); total demand imposed hard by a linear slack (`_gauss_full_demand`
+closes `Σd=D` at the largest-base-demand junction); pressures forward-solved; sensors via the
+same Gaussian `ε` likelihood; `d ≥ 0` a soft (rarely-binding) constraint. **M3** samples the
+full non-linear posterior by MCMC (reuses the ensemble; mixes well — smooth log-concave prior,
+no hard floor). **MAP** (`_run_map`) instead finds the posterior mode by Gauss-Newton
+(`scipy.optimize.least_squares` on `[(h_S−M_S)/ε ; (d−μ)/σ]`) and returns a **Laplace-Gaussian**
+sample cloud `N(d_MAP, (JᵀJ)⁻¹)` so it plugs into the same GUI/result path. MAP reproduces the
+standard formal-Bayesian WDN baseline; M3 is the non-linearised version — comparing them shows
+where non-Gaussianity matters. Validated on Alperovits vs a Gaussian-prior ABC oracle
+(`abc_reference.py --prior gaussian`): M3 → 0.07σ, MAP → 0.04σ; M3 and MAP agree to ~0.01. GUI
+exposes both as presets with a "Prior σ" control; MAP hides the walkers/chains knobs (it's an
+optimizer, not a sampler).
+
 **Demand model / floor (`cfg.demand_reference`, applies to M2 & M5).** `"base"` (default) =
 demands are `d_base + Dirichlet split of the extra D−D0`, so `d ≥ d_base` (the thesis model).
 `"zero"` = demands are a Dirichlet split of the *total* D, so only `d ≥ 0` (physical). The

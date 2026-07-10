@@ -2235,6 +2235,8 @@ class MainWindow(QtWidgets.QMainWindow):
 		self.post_method_combo = QtWidgets.QComboBox()
 		# (label, method, proposal) — data carried on each item.
 		self._post_methods = [
+			("M3 · Gaussian prior (soft sensor) — ensemble", "gaussian", "ensemble"),
+			("MAP · Gaussian prior (mode + Laplace)", "gaussian_map", "map"),
 			("M2 · Demand-space (Dirichlet, soft sensor ε) — ensemble", "demand", "ensemble"),
 			("M5 · Demand-space exact (ε=0, sensors eliminated) — ensemble", "demand_exact", "ensemble"),
 			("M1 · Pressure-space (Dirichlet, hard sensor) — ensemble", "pressure", "ensemble"),
@@ -2245,16 +2247,23 @@ class MainWindow(QtWidgets.QMainWindow):
 		for label, meth, prop in self._post_methods:
 			self.post_method_combo.addItem(label, userData=(meth, prop))
 		self.post_method_combo.setToolTip(
-			"Demand-space (M2): demands primary, pressures forward-solved, sensor imposed softly "
-			"by measurement noise ε — well-conditioned on low-flow networks.\n"
-			"Pressure-space (M1): reduced pressure coordinates with demand reconstruction (original)."
+			"M3 Gaussian prior: N(base, σ) prior on demands, hard total, soft sensor — samples the full\n"
+			"  non-linear posterior (well-conditioned; smooth).\n"
+			"MAP Gaussian: posterior mode via Gauss-Newton + a Laplace-Gaussian cloud (fast, the standard baseline).\n"
+			"M2 Demand-space (Dirichlet, soft ε); M5 exact (ε=0); M1 pressure-space (original)."
 		)
 		self.post_method_combo.currentIndexChanged.connect(self._post_method_changed)
 		method_form.addRow("Method", self.post_method_combo)
 
 		self.post_sensor_eps = self._new_double_spin(1e-4, 10.0, 0.05, decimals=4, step=0.01)
-		self.post_sensor_eps.setToolTip("Sensor measurement-noise σ (m of head), used by the demand method's soft likelihood. Smaller → tighter posterior (→ exact as ε→0).")
-		method_form.addRow("Sensor noise ε (M2)", self.post_sensor_eps)
+		self.post_sensor_eps.setToolTip("Sensor measurement-noise σ (m of head), soft-sensor likelihood. Smaller → tighter posterior (→ exact as ε→0).")
+		method_form.addRow("Sensor noise ε", self.post_sensor_eps)
+		self._post_sensor_eps_label = method_form.labelForField(self.post_sensor_eps)
+
+		self.post_prior_sigma = self._new_double_spin(1e-3, 100.0, 0.5, decimals=4, step=0.1)
+		self.post_prior_sigma.setToolTip("Gaussian prior relative std: σ_j = prior_sigma·max(base_j, mean demand). Larger = weaker prior (wider posterior).")
+		method_form.addRow("Prior σ (Gaussian)", self.post_prior_sigma)
+		self._post_prior_sigma_label = method_form.labelForField(self.post_prior_sigma)
 		outer.addWidget(method_group)
 
 		scenario_group = QtWidgets.QGroupBox("Scenario Choice")
@@ -4211,30 +4220,32 @@ class MainWindow(QtWidgets.QMainWindow):
 	def _post_method_changed(self) -> None:
 		method = self._post_current_method()
 		proposal = (self.post_method_combo.currentData() or ("pressure", "ensemble"))[1]
-		# Sensor-noise ε only applies to the soft demand method (M2); M5 is exact (ε=0).
-		self.post_sensor_eps.setEnabled(method == "demand")
-		# "Chains (R-hat)" is a random-walk knob; "Walkers" is the ensemble knob. Show only
-		# the relevant one for the selected proposal.
+		is_gaussian = method in ("gaussian", "gaussian_map")
+		is_map = (method == "gaussian_map")
+		is_pressure = (method == "pressure")
+		# ε (soft sensor) applies to M2 soft demand and the Gaussian methods, not M5/M1.
+		self.post_sensor_eps.setEnabled(method == "demand" or is_gaussian)
+		# MAP is an optimizer (no MCMC proposal): hide chains/walkers/proposal-std for it.
 		is_ens = (proposal == "ensemble")
-		# Gram Jacobian + soft-floor penalty are pressure-method (M1) only; both demand
-		# methods (M2 soft, M5 exact) use neither.
-		is_demand = method in ("demand", "demand_exact")
 
 		def _set_visible(widgets, visible):
 			for w in widgets:
 				if w is not None:
 					w.setVisible(visible)
 
-		# Proposal-specific: chains + proposal-std for random-walk; walkers for the ensemble.
-		_set_visible((self.post_num_chains, self._post_num_chains_label), not is_ens)
-		_set_visible((self.post_proposal_std, self._post_proposal_std_label), not is_ens)
+		# Proposal-specific: chains + proposal-std for random-walk; walkers for the ensemble;
+		# none for MAP.
+		_set_visible((self.post_num_chains, self._post_num_chains_label), (not is_ens) and (not is_map))
+		_set_visible((self.post_proposal_std, self._post_proposal_std_label), (not is_ens) and (not is_map))
 		_set_visible((self.post_ens_walkers, self._post_ens_walkers_label), is_ens)
-		# Method-specific: the Gram Jacobian and the soft-floor penalty are pressure-method (M1)
-		# only; the demand method (M2) uses neither (floor is exact by construction).
-		_set_visible((self.post_use_gram, self._post_use_gram_label), not is_demand)
-		_set_visible((self.post_penalty_a, self._post_penalty_a_label), not is_demand)
-		# The demand method (M2) has no elimination node — hide it from the label and plot.
-		if method == "demand":
+		# ε shown for the soft methods; prior-σ shown for the Gaussian methods.
+		_set_visible((self.post_sensor_eps, self._post_sensor_eps_label), not (method == "demand_exact"))
+		_set_visible((self.post_prior_sigma, self._post_prior_sigma_label), is_gaussian)
+		# Gram Jacobian + soft-floor penalty are pressure-method (M1) only.
+		_set_visible((self.post_use_gram, self._post_use_gram_label), is_pressure)
+		_set_visible((self.post_penalty_a, self._post_penalty_a_label), is_pressure)
+		# Only the pressure method (M1) uses an elimination node.
+		if not is_pressure:
 			self.post_elimination_node_label.setText("— (not used by demand method)")
 			if hasattr(self, "plot"):
 				self.plot.set_elimination_node(None)
@@ -4551,9 +4562,11 @@ class MainWindow(QtWidgets.QMainWindow):
 			total_demand_value = float(sum(float(v) for v in self._post_current_demands.values()))
 			predictor_heads = {str(k): float(v) for k, v in heads.items()}
 			method, proposal = self.post_method_combo.currentData() or ("pressure", "ensemble")
-			# Demand method (M2) needs walkers started inside the feasible region -> small
-			# init dispersion; the pressure method tolerates a wider spread.
-			ens_disp = {"demand": 0.3, "demand_exact": 0.01}.get(method, 0.02)
+			# Ensemble walkers must start inside the feasible region -> small init dispersion for
+			# the demand/gaussian methods; the pressure method tolerates a wider spread.
+			ens_disp = {"demand": 0.3, "demand_exact": 0.01, "gaussian": 0.05}.get(method, 0.02)
+			# MAP is an optimizer; force a sampler-compatible proposal string.
+			cfg_proposal = "ensemble" if proposal == "map" else proposal
 			cfg = cfg_cls(
 				burn_in=int(self.post_burn_in.value()),
 				num_samples=int(self.post_num_samples.value()),
@@ -4562,13 +4575,14 @@ class MainWindow(QtWidgets.QMainWindow):
 				demand_penalty_a=float(self.post_penalty_a.value()),
 				num_chains=int(self.post_num_chains.value()),
 				method=method,
-				proposal=proposal,
+				proposal=cfg_proposal,
 				sensor_noise_eps=float(self.post_sensor_eps.value()),
+				prior_sigma=float(self.post_prior_sigma.value()),
 				ensemble_init_dispersion=ens_disp,
 				ensemble_walkers=int(self.post_ens_walkers.value()),
 			)
-			# The demand method (M2) has no elimination node; only the pressure method uses it.
-			elim_for_run = None if method == "demand" else self._post_auto_elim_node
+			# Only the pressure method (M1) uses an elimination node.
+			elim_for_run = self._post_auto_elim_node if method == "pressure" else None
 			result = run_sampler(
 				inp_path=inp_abs,
 				measurement_heads=measurement_heads,

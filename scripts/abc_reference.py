@@ -104,11 +104,14 @@ def main() -> None:
 	ap.add_argument("--hydraulics", choices=["epanet", "internal"], default="epanet",
 		help="forward model for the ABC oracle: EPANET (independent) or the sampler's own solve "
 			 "(same hydraulics as M2, isolates sampler correctness from solver consistency)")
+	ap.add_argument("--prior", choices=["dirichlet", "gaussian"], default="dirichlet",
+		help="prior for the ABC oracle & the MCMC variants scored against it")
+	ap.add_argument("--prior-sigma", type=float, default=0.5, help="Gaussian prior relative std")
 	args = ap.parse_args()
 
 	inp = os.path.join(ROOT_DIR, "wdn", f"{args.wdn}.inp")
 	cache = os.path.join(ROOT_DIR, "scripts",
-		f"abc_cache_{args.wdn}_{'-'.join(args.sensors)}_D{args.delta}_s{args.seed}_N{args.n_abc}_{args.hydraulics}.npz")
+		f"abc_cache_{args.wdn}_{'-'.join(args.sensors)}_D{args.delta}_s{args.seed}_N{args.n_abc}_{args.hydraulics}_{args.prior}.npz")
 
 	ns = runpy.run_path(os.path.join(ROOT_DIR, "mh_posteriori-scenario-gen.py"))
 
@@ -116,6 +119,16 @@ def main() -> None:
 	junc_ids = list(net.junctions.keys())
 	d0 = np.array([net.junctions[j].base_demand for j in junc_ids], dtype=float)
 	D = float(d0.sum()) + args.delta
+
+	# Prior draw: Dirichlet split of the extra demand, or a Gaussian centred at base and
+	# conditioned on the total (sum d = D) by projection onto the constraint hyperplane.
+	gsig = args.prior_sigma * np.maximum(d0, float(d0.sum()) / len(junc_ids))
+	def draw_prior(rng):
+		if args.prior == "gaussian":
+			d = rng.normal(d0, gsig)
+			d = d - gsig**2 * (float(np.sum(d)) - D) / float(np.sum(gsig**2))  # condition sum d = D
+			return d
+		return d0 + args.delta * rng.dirichlet(np.ones(len(junc_ids)))
 
 	# Base heads (one EPANET call) seed the internal forward solve and fix the reservoir head.
 	base_heads, _ = _epanet_solver(inp, junc_ids)(d0)
@@ -131,15 +144,15 @@ def main() -> None:
 		d_samples, resid, d_true = z["d_samples"], z["resid"], z["d_true"]
 	else:
 		rng = np.random.default_rng(args.seed)
-		d_true = d0 + args.delta * rng.dirichlet(np.ones(len(junc_ids)))
+		d_true = d0 + args.delta * rng.dirichlet(np.ones(len(junc_ids)))  # ground-truth scenario -> defines M
 		h_td, _ = solve(d_true)
 		M_S = np.array([h_td[s] for s in args.sensors], dtype=float)
-		print(f"Running ABC with {args.n_abc} draws ({args.hydraulics} hydraulics, no cache) ...")
+		print(f"Running ABC with {args.n_abc} draws ({args.hydraulics} hydraulics, {args.prior} prior, no cache) ...")
 		abc_rng = np.random.default_rng(20260703)
 		d_samples = np.empty((args.n_abc, len(junc_ids)), dtype=float)
 		resid = np.full(args.n_abc, np.inf, dtype=float)
 		for i in range(args.n_abc):
-			d = d0 + args.delta * abc_rng.dirichlet(np.ones(len(junc_ids)))
+			d = draw_prior(abc_rng)
 			h, ok = solve(d)
 			d_samples[i] = d
 			if ok:
@@ -173,20 +186,30 @@ def main() -> None:
 	m2_eps = args.m2_eps if args.m2_eps > 0 else eps
 
 	variants = {}
-	if not args.no_rwm:
-		variants["M1 pressure/RWM"] = Cfg(
-			method="pressure", proposal="rwm", burn_in=args.burn_in, num_samples=args.samples,
-			proposal_std=args.rwm_proposal_std, demand_penalty_a=0.0,
-			num_chains=args.rwm_chains, chain_init_dispersion=0.2)
-	variants["M1 pressure/ensemble"] = Cfg(
-		method="pressure", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
-		demand_penalty_a=0.0, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=args.ens_disp)
-	variants["M2 demand/ensemble"] = Cfg(
-		method="demand", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
-		sensor_noise_eps=m2_eps, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.3)
-	variants["M5 demand_exact/ensemble"] = Cfg(
-		method="demand_exact", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
-		ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.01)
+	if args.prior == "gaussian":
+		# Gaussian-prior methods: MCMC (non-linearised) vs MAP (Laplace).
+		variants["M3 gaussian/ensemble"] = Cfg(
+			method="gaussian", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+			sensor_noise_eps=m2_eps, prior_sigma=args.prior_sigma,
+			ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.05)
+		variants["MAP gaussian (Laplace)"] = Cfg(
+			method="gaussian_map", num_samples=args.samples,
+			sensor_noise_eps=m2_eps, prior_sigma=args.prior_sigma)
+	else:
+		if not args.no_rwm:
+			variants["M1 pressure/RWM"] = Cfg(
+				method="pressure", proposal="rwm", burn_in=args.burn_in, num_samples=args.samples,
+				proposal_std=args.rwm_proposal_std, demand_penalty_a=0.0,
+				num_chains=args.rwm_chains, chain_init_dispersion=0.2)
+		variants["M1 pressure/ensemble"] = Cfg(
+			method="pressure", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+			demand_penalty_a=0.0, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=args.ens_disp)
+		variants["M2 demand/ensemble"] = Cfg(
+			method="demand", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+			sensor_noise_eps=m2_eps, ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.3)
+		variants["M5 demand_exact/ensemble"] = Cfg(
+			method="demand_exact", proposal="ensemble", burn_in=args.burn_in, num_samples=args.samples,
+			ensemble_walkers=args.ens_walkers, ensemble_init_dispersion=0.01)
 
 	print(f"Dimension (free z): first build to report ...")
 	results = {}
