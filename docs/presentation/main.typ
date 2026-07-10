@@ -306,7 +306,7 @@
     #h(0.1em) *-* #h(0.3em) Algorithm only works if it actually _mixes_\
       $quad$ (chain eventually independent of starting point)\
   ]
-
+]
 
 ])
 
