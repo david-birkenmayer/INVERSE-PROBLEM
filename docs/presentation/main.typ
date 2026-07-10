@@ -87,7 +87,7 @@
   #uncover("5-")[
   *What we know:*
   - Given demands $d$ and $D$, pressures $h$ are unique. \ Calculation is well-conditioned.
-  - Givenpressures $h$, $d$ and $D$ are unique. \ Calculation is ill-conditioned around low flows.
+  - Given pressures $h$, demands $d$ and $D$ are unique. \ Calculation is ill-conditioned around low flows.
 
   ]
   ]
@@ -95,7 +95,7 @@
 
 == Our model
 
-#slide(repeat: 4, self => [
+#slide(repeat: 5, self => [
   #let (uncover, only) = utils.methods(self)
 
   #columns(2, gutter: 40pt)[
@@ -115,19 +115,25 @@
     - an _observation_ $z = (D^z, h^z_cal(Y) )$ is a tuple of the observed total demand and the observed pressures at the sites
     - $Z$ is the set of all observations.
   ]
+  #uncover("3-")[
+    - assume a _sensor likelihood_ function $P(z | s)$
+  ]
 
   #v(0.5em)
-  #uncover("3-")[
+  #uncover("4-")[
     $-->$ Want to find a good predictor $F: Z -> S$ (e.g. GNN)\
   ]
 
-  #uncover("4-")[
+  #uncover("5-")[
     $-->$ But how do we determine what "good" is?
   ]
 
   #colbreak()
-  #uncover("3-")[
+  #uncover("1-")[
     *Insert Image* \
+  ]
+  #uncover("3-")[
+    *Sensor Likelihoods* \
   ]
 ]
 
@@ -144,17 +150,20 @@
   #uncover("1-")[
     *Assumptions:* 
     - _prior distribution_ $P$ on the state space $S$
+    - _sensor likelihood_ $P(s | z)$
     - _measurement sites_ $cal(Y) subs cal(J)$ (hexagons)
     - _observation_ $z = (D^z, h^z_cal(Y) )$
   ]
   
   #uncover("2-")[
     *What we want to do:* \
-    $->$ sample _posterior distribution_ $P_z := s mapsto P(s | z)$\
-    $quad$ That is, with conditions $D^s approx D^z$ and $h^s_cal(Y) approx h^z_cal(Y)$
+    $->$ sample _posterior distribution_ 
+    $ P_z (s) := P(s | z) quad prop quad
+     underbrace(P(s), "prior") dot underbrace(P(z | s), "sensor likelihood") 
+    $
   ]
 
-  #uncover("3-")[
+  #uncover("4-")[
     *Why do we want this:* \
     - Can measure how good a prediction $F(s)$ is, by comparing it to the sampled results
     - Shows how confident we can be in the prediction in certain areas
@@ -162,9 +171,43 @@
   ]
 
   #colbreak()
-  [insert image here]
   ]
 
+])
+
+== The sensor likelihood
+
+#slide(repeat: 5, self => [
+  #let (uncover, only) = utils.methods(self)
+
+  #v(0.5em)
+  #uncover("1-")[
+    *Bayes:* the measurement _reweights_ the prior through a likelihood
+    $ P_z (s) prop underbrace(P(z | s), "sensor model") dot underbrace(P(s), "prior") $
+  ]
+  #uncover("2-")[
+    - _prior_ $P(s)$: our demand model (Dirichlet) --- fixed
+    - _likelihood_ $P(z | s)$: encodes what we believe about _sensor noise_
+    - total demand $D^s = D^z$ imposed _exactly_; only pressures $h_cal(Y)$ are softened
+  ]
+  #uncover("3-")[
+    *Three choices of $P(z | s)$ --- one family, parameter $eps$:*
+    #table(
+      columns: 3,
+      stroke: none,
+      table.header([kernel], [$P(z | s) prop$], [noise model]),
+      [_Dirac_],   [$delta(h^s_cal(Y) - h^z_cal(Y))$], [noiseless],
+      [_uniform_], [$bb(1)[||h^s_cal(Y) - h^z_cal(Y)|| < eps]$], [bounded $eps$],
+      [_Gaussian_],[$exp(-1/(2 eps^2) ||h^s_cal(Y) - h^z_cal(Y)||^2)$], [Gaussian $eps$],
+    )
+  ]
+  #uncover("4-")[
+    - Dirac is the _exact_ posterior we want --- but lives on a _measure-zero manifold_ (cannot sample naively)
+    - $eps > 0$ softens it into a samplable band; both uniform and Gaussian $-> $ Dirac as $eps -> 0$
+  ]
+  #uncover("5-")[
+    $-->$ next: _MAP_ uses the Gaussian row, _ABC_ uses the uniform row
+  ]
 ])
 
 == Open questions
@@ -205,13 +248,13 @@
     - Demands are gaussian-distributed around $d^(hat(s))$
   ]
   #uncover("2-")[
-    - Use sensor-likelihood function:
+    - Use gaussian sensor-likelihood function:
     $
       P(z | s) prop exp(-1/(2epsilon^2)||h_cal(Y)^s-h^z_cal(Y)||^2)
     $
   ]
   #uncover("3-")[
-    - Idea: By linearity the mean is equal to the _mode_ (most likely $s$ given $z$):
+    - Idea: By linearity the mean is equal to the _mode_ (most likely state):
   ]
   #uncover("4-")[
     $
@@ -223,10 +266,13 @@
   ] 
 
   #uncover("5-")[
-  #h(0.1em) *+* #h(0.3em) fast and reliable solution \
-  #h(0.1em) *--* #h(0.3em) requires fixed reference and linearizes\
-  #h(0.1em) *--* #h(0.3em) only works with Gaussian prior\
-  #h(0.1em) *--* #h(0.3em) posterior distribution is only approximated
+    #columns(2, gutter: 8pt)[
+    #h(0.1em) *+* #h(0.3em) fast and reliable solution \
+    #h(0.1em) *--* #h(0.3em) requires fixed reference and linearizes\
+    #colbreak()
+    #h(0.1em) *--* #h(0.3em) only works with Gaussian prior\
+    #h(0.1em) *--* #h(0.3em) posterior distribution is only approximated
+    ]
   ]
 
 ])
@@ -239,11 +285,13 @@
 
   #v(0.5em)
   #uncover("1-")[
-    - _Algorithm:_ Sample $s ~ P$, and accept it only if $||h^s_cal(Y)-h^z_cal(Y)||<eps$
+    - _Algorithm:_ Sample $s ~ P$, and accept it with probability $P(z | s)$
+    - for uniform likelihood, would be accepted if $||h^s_cal(Y)-h^z_cal(Y)||<eps$
+    - for gaussian likelihood, would be accepted with probability $exp(-1/(2eps^2)||h^s_cal(Y)-h^z_cal(Y)||^2)$
+    - dirac not applicable, since acceptance rate would be zero.
   ]
   #uncover("2-")[
-    #h(0.1em) *+* #h(0.3em) Works with any prior and without a fixed reference point\
-    #h(0.1em) *+* #h(0.3em) Approximates exact posterior as $eps-> 0$\
+    #h(0.1em) *+* #h(0.3em) Works with any prior, does not require linearization\
     #h(0.1em) *--* #h(0.3em) Acceptance rate scales with $(1/eps)^(|cal(Y)|)$ (curse of dimensionality)
   ]
 
@@ -252,12 +300,51 @@
    - Essentially uses uniform sensor-likelihood
    $ P_"unf" (z | s) prop cases(1 "  if" ||h^s_cal(Y)-h^z_cal(Y)||<eps, 0 "  otherwise") $
   ]
-  - Could also use different sensor-likelihood, but runs into same problem
-
 ])
 
 
-== Slide
+== Monte Carlo Markov Chain (MCMC)
+
+#slide(repeat: 4, self => [
+  #let (uncover, only) = utils.methods(self)
+
+  #columns(2, gutter: 8pt)[
+  #v(0.5em)
+  #uncover("1-")[
+    - similar to ABC method, but uses dependend gernerates $(s_0,s_1,...)$ instead of independent samples
+  ]
+  
+  #uncover("2-")[
+    *Algorithm:* \
+    - Assume we have already chosen $s_1,...,s_n$
+    - Propose candidate $s_(n+1)$ by adding noise to $s_n$
+    - If $cal(L)(s_(n+1)) >= cal(L)(s_n)$, accept the candidate
+    - If not, accept with probability $(cal(L)(s_(n+1))) / (cal(L)(s_n)) <1$
+  ]
+
+  #v(0.5em)
+  #uncover("3-")[
+    - produces correct posterior if noise is symmetric (e.g. gaussian)
+    - discard around first half of samples (burn-in period)
+  ]
+    
+  #uncover("4-")[
+    #h(0.1em) *+* #h(0.3em) Works with any prior, does not require linearization\
+    #h(0.1em) *+* #h(0.3em) stays in high-likelihood-regions\
+    #h(0.1em) *-* #h(0.3em) samples are _autocorrelated_, need more than usual \
+    #h(0.1em) *-* #h(0.3em) Algorithm only works if it actually _mixes_\
+      $quad$ (chain eventually independent of starting point)\
+  ]
+
+
+  #colbreak()
+  #uncover("3-")[
+    *blah:* \
+  ]
+]
+])
+
+== My results
 
 #slide(repeat: 3, self => [
   #let (uncover, only) = utils.methods(self)
@@ -280,7 +367,6 @@
 ]
 
 ])
-
 
 == This is the end
 #v(10em)
