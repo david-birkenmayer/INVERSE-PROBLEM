@@ -76,6 +76,9 @@ class MHPosteriorConfig:
 	#                                (scipy least_squares) plus a Laplace-Gaussian sample cloud.
 	# prior_sigma is the relative prior std: sigma_j = prior_sigma * max(d_base_j, mean demand).
 	prior_sigma: float = 0.5
+	# Prior family for the demand methods (M2, M5): "dirichlet" (default) or "gaussian".
+	# The Gaussian prior is N(d_base, diag(sigma^2)) on the raw demands with d >= 0 support.
+	prior: str = "dirichlet"
 	sensor_noise_eps: float = 0.05     # sensor measurement-noise std (m of head), M2 soft likelihood
 	forward_max_iter: int = 40
 	forward_tol: float = 1e-10
@@ -188,6 +191,12 @@ class PosteriorScenarioSampler:
 			self.demand_offset = self.base_demands.copy()
 			self.demand_scale = float(self.target_extra)
 			self.demand_floor = self.base_demands.copy()
+
+		# Gaussian prior params N(d_base, diag(sigma^2)) — available to any demand method that
+		# opts into cfg.prior == "gaussian" (M2, M5); cheap and method-independent.
+		_mean_scale = float(self.base_total) / float(self.n_junctions) if self.n_junctions else 1.0
+		self.gauss_mean = self.base_demands.copy()
+		self.gauss_sigma = np.maximum(float(self.cfg.prior_sigma) * np.maximum(self.base_demands, _mean_scale), 1e-9)
 
 		self.fixed_heads: Dict[str, float] = {str(k): float(v) for k, v in measurement_heads.items()}
 		self.predictor_heads: Dict[str, float] = {
@@ -838,16 +847,23 @@ class PosteriorScenarioSampler:
 			st.x = theta; st.warm = h
 			return st
 
-		# Feasibility: every demand at or above its floor (d >= d_base for "base", d >= 0 for "zero").
-		if np.any(d < self.demand_floor - self.cfg.demand_lb_tolerance):
+		gaussian_prior = str(self.cfg.prior).lower() == "gaussian"
+		# Feasibility floor: d >= 0 for the Gaussian prior, else the Dirichlet floor
+		# (d >= d_base for "base", d >= 0 for "zero").
+		floor = np.zeros(self.n_junctions) if gaussian_prior else self.demand_floor
+		if np.any(d < floor - self.cfg.demand_lb_tolerance):
 			st = _StateEval(False, theta, 0.0, h, d, -np.inf, -np.inf, -np.inf, 0.0)
 			st.x = theta; st.warm = h
 			return st
 
-		# Dirichlet prior on the reconstructed shares alpha = (d - offset) / scale.
-		if self.demand_scale <= self.cfg.simplex_eps * max(1.0, abs(self.measured_total_demand)):
+		if gaussian_prior:
+			# Gaussian prior N(d_base, diag(sigma^2)) on the raw demands.
+			z = (d - self.gauss_mean) / self.gauss_sigma
+			log_dir = -0.5 * float(np.dot(z, z))
+		elif self.demand_scale <= self.cfg.simplex_eps * max(1.0, abs(self.measured_total_demand)):
 			log_dir = 0.0
 		else:
+			# Dirichlet prior on the reconstructed shares alpha = (d - offset) / scale.
 			alpha = (d - self.demand_offset) / self.demand_scale
 			log_dir = float(self.log_dirichlet_norm + np.sum((self.alpha - 1.0) * np.log(np.maximum(alpha, 1e-300))))
 

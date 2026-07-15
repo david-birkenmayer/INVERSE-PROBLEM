@@ -310,9 +310,41 @@
 
 ])
 
+== What I've been trying
+
+#slide(repeat: 3, self => [
+  #let (uncover, only) = utils.methods(self)
+
+
+  #uncover("1-")[
+    *Exact Pressure Space approach*
+    - Sample pressure vectors $h_v$ for $v in V without cal(Y)$, (we know $h_cal(Y) = h_cal(Y)^z$)
+    - Calculate corresponding $d$.
+    - Enforce $bb(1)^top d = D$ by changing $h_(v')$ accordingly, leads to hydraulic state $s$
+    - calculate likelihood of state occuring via Jacobain determinant
+  ]
+  
+  #uncover("2-")[
+    *Exact Demand Space approach*
+    - Sample demand vectors $d$ (all of them)
+    - Calculate corresponding $h$.
+    - Enforce $bb(1)^top d = D$ and $h_cal(Y) = h_cal(Y)^z$ by changing $d_cal(Y)$ and $d_v'$ accordingly, leads to hydraulic state $s$
+    - calculate likelihood of state occuring via Jacobain determinant
+  ]
+
+
+  #uncover("3-")[
+    *Inexact Demand Space approach:*
+    - Instead of adjusting $d$ w.r.t $h_cal(Y) = h_cal(Y)^z$, use gaussion sensor-likelihood function
+  ]
+
+
+])
+
+
 == My results
 
-#slide(repeat: 4, self => [
+#slide(repeat: 1, self => [
   #let (uncover, only) = utils.methods(self)
 
   #columns(2, gutter: 20pt)[
@@ -326,11 +358,11 @@
       stroke: none,
       align: (left, center),
       table.header([sampler], [gap to oracle]),
-      [_MAP_ (Gaussian, Laplace)],       [$0.04 sigma$],
-      [_MCMC_ pressure-space],           [$0.08 sigma$],
-      [_MCMC_ demand-space (soft $eps$)], [$0.07 sigma$],
-      [_MCMC_ demand-space (exact, $eps=0$)], [$0.01 sigma$],
-      [_MCMC_ Gaussian prior],           [$0.07 sigma$],
+      [_MAP_ (Gaussian, MAP)],                  [$0.04 sigma$],
+      [_MCMC_ pressure-space (exact)],          [$0.08 sigma$],
+      [_MCMC_ demand-space (gaussian sensor)],  [$0.07 sigma$],
+      [_MCMC_ demand-space (exact)],            [$0.01 sigma$],
+      [_MCMC_ Gaussian prior],                  [$0.07 sigma$],
     )
     #v(0.2em)
     $-->$ MAP $approx$ MCMC-mean when near-Gaussian; MCMC recovers the _non-Gaussian_ shape.
@@ -365,7 +397,7 @@ Thank you for your attention!
 ]
 #set text(15pt)
 #align(center)[
-Shoutout to Fabian for the Slide design
+Shoutout to Fabian vdW for the Slide design
 ]
 
 
