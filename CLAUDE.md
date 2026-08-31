@@ -55,7 +55,8 @@ across all junctions — this is what makes the scenario law spread-out and non-
 | `docs/` | Typst thesis. `main.typ` includes `chapters/*.typ`. Chapter 7 = MCMC. |
 | `scenario/<WDN>/` | Saved posterior scenarios: `<name>.json` (scenario) + `<name>_mh_result.json` (MCMC output), `cache_index.json`. |
 | `data/`, `.gui_cache/` | Cached solver runs / GNN artifacts (see `PLAN.md` for the GNN cache schema). |
-| `wdn/*.inp` | EPANET networks: Alperovits, Kadu, Hanoi, Anytown, Modena, BAK, Baghmalek, ZhiJiang. |
+| `wdn/*.inp` | EPANET networks: Alperovits, Kadu, Hanoi, Anytown, Modena, BAK, Baghmalek, ZhiJiang, **L-TOWN_C** (BattLeDIM Area C — own section below). |
+| `docs/2020 BATTLEDIM Introduction.pdf` | BattLeDIM 2020 challenge deck: sensors, leak model/sizing, nominal-vs-real model. |
 | `old/` | Superseded scripts + the GNN data-generator notebook referenced by `PLAN.md`. |
 | `PLAN.md` | Integration plan for the GNN pipeline ↔ inverse solver (mostly done). |
 
@@ -207,6 +208,89 @@ zero and acceptance is 0. This is math, not a bug — the total demand equals th
 outflow, which only the reservoir head and its direct neighbors control. The GUI therefore
 auto-selects the reservoir-adjacent junction (highest degree if several) and does not let
 the user choose; the sampler's `_choose_elimination_node` uses the same rule.
+
+## L-TOWN_C / BattLeDIM (current focus, added 2026-08-31)
+
+`wdn/L-TOWN_C.inp` is Area C of the **BattLeDIM 2020** benchmark (intro deck:
+`docs/2020 BATTLEDIM Introduction.pdf`). It has no companion `wdn/L-TOWN_C.json` yet.
+
+**Structure — fits the model class exactly.** 92 junctions, 109 pipes (→ 17 independent
+loops), **one** reservoir `1` at head 102 m, no tanks/pumps/valves, Hazen–Williams, single
+connected component. Junction ids come in two blocks: `n1`–`n45` and `n343`–`n389`. Only
+**one** reservoir-adjacent junction, `n343` — so it is the forced M1 elimination node (see
+the elimination-node rule above), and putting a sensor there changes the total-demand
+elimination.
+
+**Extreme low-flow regime — this is the dominant fact.** Base-case forward solve:
+
+| quantity | value |
+|---|---|
+| total base demand `D⁰` (= avg inflow) | 5.15e-3 m³/s = 18.5 m³/h |
+| head spread across the *whole* network | **0.088 m** |
+| median pipe head loss | 2.0e-5 m |
+| pipes with \|Δh\| < 1e-4 m | 95 / 109 |
+| peak demand pattern multiplier | 1.51 (`P-Residential`) |
+
+Head loss ~ `q^1.852`, so even at pattern peak the spread is ≈0.19 m; a ~8.4× demand
+multiplier would be needed for a 5 m spread. **Consequence:** at any realistic sensor noise
+the likelihood `K_ε` is near-flat over the prior support, so `P(s|z) ≈ P(s)` — demands are
+weakly identified and the reported a-posteriori error will be close to the *prior* width.
+That is the honest identifiability answer for this district, not a sampler failure. It also
+flips the difficulty: unlike Kadu's thin sliver, a near-flat likelihood is a wide,
+well-conditioned posterior that **mixes easily** even at dim 92. M1 (pressure space) is a
+non-starter here (`Δh ~ 1e-5` reconstruction); use M2/M3.
+
+**Hard resolution floor on ε.** The BattLeDIM deck states sensor readings are *rounded to 2
+decimal places* → **0.01 m is a floor on ε regardless of sensor quality.**
+
+**Sizing `extra_demand` (leak magnitude).** BattLeDIM sizes leaks as a fraction of average
+inflow: background 1–5%, medium burst 5–10%, large burst >10%. Sweep of a single-node leak λ
+over all 92 junctions, reporting `max |Δh|` over the network (i.e. a best-case oracle sensor;
+a fixed sensor set sees less):
+
+| λ (% of D⁰) | λ (m³/h) | median over leak nodes of max\|Δh\| | leak nodes invisible at 0.01 m |
+|---|---|---|---|
+| 1% | 0.19 | 0.0017 m | **92 / 92** |
+| 5% | 0.93 | 0.0087 m | 65 / 92 |
+| **10%** | **1.85** | **0.0178 m** | **5 / 92** |
+| 25% | 4.64 | 0.0484 m | 4 / 92 |
+
+→ **Use `extra_demand = 5.15e-4 m³/s` (10% of D⁰, the large-burst threshold).** Below 5% two
+thirds of the network is invisible even to a perfectly placed sensor. With `λ ~ U[0, Δ]` the
+lower half of the range sits under the resolution floor — report that, don't hide it.
+
+**The single-leak prior collapses to exact enumeration (no MCMC needed).** Current prior of
+interest: pick `v ∈ J` uniformly, `λ ~ U[0, Δ]`, set `d = d⁰ + λ·e_v`. Then
+`1ᵀd = D⁰ + λ`, and since the model conditions on total demand **exactly** (`δ(D^z − D^s)`;
+in BattLeDIM D really is measured — flow sensors at the DMA entrances), **the observation
+determines λ**. What remains is a 92-term *discrete* posterior
+
+    P(v | z) ∝ K_ε( h_Y(d⁰ + λ·e_v) − h_Y^z )
+
+computable exactly with 92 forward solves (seconds) — no Metropolis, no Gram-Jacobian, no
+mixing diagnostics. Worth building anyway: it is an **exact** ground truth, strictly better
+than the sampled ABC oracle for validating M1/M2/M5. If D⁰ is not trusted (the nominal model
+randomizes base demands ±10%), λ stays continuous and the posterior lives on
+`92 × [0, Δ]` — still exact by 1-D quadrature per node (~5000 forward solves). MCMC only
+becomes necessary once the prior is complicated to multiple simultaneous leaks or a
+continuous demand field.
+
+**Sensor set: unresolved.** The deck says 33 pressure sensors across all of L-Town, placed by
+a sensitivity-matrix method, but does **not** list node ids, and no sensor list exists
+anywhere on the machine. `SMARTWINE_data/python/networks/l-town_edt.inp` is *not* the full
+L-Town — it is another 92-junction variant with different node naming, so it cannot
+corroborate a candidate list. Note also that **Area C is the AMR area** — the district where
+demands are directly metered — so sensors were concentrated elsewhere and there may be few or
+no BattLeDIM pressure sensors inside L-TOWN_C at all. Two ways forward: (a) pull the official
+list from the BattLeDIM dataset repo (the sensor `.csv` files name the nodes) and filter to
+the 92 Area-C junctions; (b) **place sensors ourselves** by minimizing expected posterior
+entropy over the 92 leak candidates — closer to the thesis's sensor-placement question, and
+worth doing either way as a comparison.
+
+**Nominal-vs-real caveat (from the deck).** The distributed `.inp` is the *nominal* model:
+base demands and pipe parameters are randomized ±10% vs the "real" network used to generate
+the data, industrial patterns are withheld, and pipes `p37`/`p251` are closed in the real
+network. Any validation against BattLeDIM time series inherits that mismatch.
 
 ## Running things
 
