@@ -1,4 +1,4 @@
-  Page 1                                    Wed Jul 15 13:29:44 2026
+  Page 1                                    Mon Aug 31 15:53:16 2026
 
   ******************************************************************
   *                           E P A N E T                          *
@@ -7,6 +7,22 @@
   *                         Version 2.2                            *
   ******************************************************************
   
-  Analysis begun Wed Jul 15 13:29:44 2026
+  Analysis begun Mon Aug 31 15:53:16 2026
 
-  Analysis ended Wed Jul 15 13:29:44 2026
+   
+  Hydraulic Status:
+  -----------------------------------------------------------------------
+     0:00:00: Balancing the network:
+
+              Trial  1: relative flow change = 4.305191
+              Trial  2: relative flow change = 0.477288
+              Trial  3: relative flow change = 0.166684
+              Trial  4: relative flow change = 0.035336
+              Trial  5: relative flow change = 0.002441
+                        maximum  flow change = 0.0343 for Link p290
+                        maximum  head error  = 0.0000 for Link p250
+
+     0:00:00: Balanced after 5 trials
+     0:00:00: Reservoir 1 is emptying
+   
+  Analysis ended Mon Aug 31 15:53:16 2026
