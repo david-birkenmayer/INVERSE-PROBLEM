@@ -235,29 +235,36 @@ Head loss ~ `q^1.852`, so even at pattern peak the spread is ≈0.19 m; a ~8.4×
 multiplier would be needed for a 5 m spread. **Consequence:** at any realistic sensor noise
 the likelihood `K_ε` is near-flat over the prior support, so `P(s|z) ≈ P(s)` — demands are
 weakly identified and the reported a-posteriori error will be close to the *prior* width.
-That is the honest identifiability answer for this district, not a sampler failure. It also
-flips the difficulty: unlike Kadu's thin sliver, a near-flat likelihood is a wide,
-well-conditioned posterior that **mixes easily** even at dim 92. M1 (pressure space) is a
-non-starter here (`Δh ~ 1e-5` reconstruction); use M2/M3.
+That holds for *diffuse* priors (Dirichlet/Gaussian over all 92 demands). It also flips the
+difficulty: unlike Kadu's thin sliver, a near-flat likelihood is a wide, well-conditioned
+posterior that **mixes easily** even at dim 92. M1 (pressure space) is a non-starter here
+(`Δh ~ 1e-5` reconstruction); use M2/M3. **But note:** for the concentrated single-leak prior
+at realistic BattLeDIM leak sizes the signal is *far* above the noise (see the sizing table
+below) — that problem is well identified. Low flow makes the diffuse-demand question hard,
+not the leak-localization question.
 
 **Hard resolution floor on ε.** The BattLeDIM deck states sensor readings are *rounded to 2
 decimal places* → **0.01 m is a floor on ε regardless of sensor quality.**
 
-**Sizing `extra_demand` (leak magnitude).** BattLeDIM sizes leaks as a fraction of average
-inflow: background 1–5%, medium burst 5–10%, large burst >10%. Sweep of a single-node leak λ
-over all 92 junctions, reporting `max |Δh|` over the network (i.e. a best-case oracle sensor;
-a fixed sensor set sees less):
+**Sizing `extra_demand` (leak magnitude) — percentages are of the SYSTEM inflow.** The deck
+sizes leaks as a fraction of average inflow (background 1–5%, medium burst 5–10%, large burst
+>10%) and states **average system inflow ≈ 180 m³/h** for all of L-Town. Area C's inflow is
+only 18.5 m³/h, i.e. **~10% of the system** — so the brackets must be applied to 180, *not*
+to 18.5. In absolute terms BattLeDIM leaks are ≈1.8 m³/h (smallest background) up to >18 m³/h
+(medium/large burst), which for Area C is 10%–150% of its entire demand. Sweep of a single-node
+leak λ over all 92 junctions, `max |Δh|` over the network (best-case oracle sensor):
 
-| λ (% of D⁰) | λ (m³/h) | median over leak nodes of max\|Δh\| | leak nodes invisible at 0.01 m |
-|---|---|---|---|
-| 1% | 0.19 | 0.0017 m | **92 / 92** |
-| 5% | 0.93 | 0.0087 m | 65 / 92 |
-| **10%** | **1.85** | **0.0178 m** | **5 / 92** |
-| 25% | 4.64 | 0.0484 m | 4 / 92 |
+| BattLeDIM class | λ (m³/h) | λ (m³/s) | % of Area-C inflow | median max\|Δh\| | invisible at 0.01 m |
+|---|---|---|---|---|---|
+| background 1% | 1.8 | 5.0e-4 | 9.7% | 0.017 m | 6 / 92 |
+| background 5% | 9.0 | 2.5e-3 | 48% | 0.107 m | 2 / 92 |
+| medium 10% | 18.0 | 5.0e-3 | 97% | 0.281 m | 0 / 92 |
+| large 15% | 27.0 | 7.5e-3 | 146% | 0.514 m | 0 / 92 |
 
-→ **Use `extra_demand = 5.15e-4 m³/s` (10% of D⁰, the large-burst threshold).** Below 5% two
-thirds of the network is invisible even to a perfectly placed sensor. With `λ ~ U[0, Δ]` the
-lower half of the range sits under the resolution floor — report that, don't hide it.
+→ **Use `extra_demand ≈ 5.0e-3 m³/s` (18 m³/h)** so `λ ~ U[0, Δ]` spans the real BattLeDIM
+range from smallest background leak to medium burst. (An earlier note here recommended
+5.15e-4 m³/s by mis-reading the percentages as relative to Area-C inflow; that value is in
+fact only the *smallest* BattLeDIM leak, not a representative one.)
 
 **The single-leak prior collapses to exact enumeration (no MCMC needed).** Current prior of
 interest: pick `v ∈ J` uniformly, `λ ~ U[0, Δ]`, set `d = d⁰ + λ·e_v`. Then
@@ -275,22 +282,167 @@ randomizes base demands ±10%), λ stays continuous and the posterior lives on
 becomes necessary once the prior is complicated to multiple simultaneous leaks or a
 continuous demand field.
 
-**Sensor set: unresolved.** The deck says 33 pressure sensors across all of L-Town, placed by
-a sensitivity-matrix method, but does **not** list node ids, and no sensor list exists
-anywhere on the machine. `SMARTWINE_data/python/networks/l-town_edt.inp` is *not* the full
-L-Town — it is another 92-junction variant with different node naming, so it cannot
-corroborate a candidate list. Note also that **Area C is the AMR area** — the district where
-demands are directly metered — so sensors were concentrated elsewhere and there may be few or
-no BattLeDIM pressure sensors inside L-TOWN_C at all. Two ways forward: (a) pull the official
-list from the BattLeDIM dataset repo (the sensor `.csv` files name the nodes) and filter to
-the 92 Area-C junctions; (b) **place sensors ourselves** by minimizing expected posterior
-entropy over the 92 leak candidates — closer to the thesis's sensor-placement question, and
-worth doing either way as a comparison.
+**Sensor set: RESOLVED — the Area C pressure sensors are `n1`, `n4`, `n31`.** Source:
+`~/Seafile/Arbeitsordner/SMARTWINE_data/python/networks/l-town_edt.inp`. That file is Area C
+**renumbered `1`–`92`** (not, as first assumed, a different network) and its `[JUNCTIONS]`
+lines carry inline annotations: three nodes tagged `;AMR & PRESSURE SENSOR` (edt ids 1, 4, 31)
+and 79 tagged plain `;AMR`. Mapping edt→L-TOWN_C by elevation is exact and unambiguous (all 92
+elevations are unique, 92/92 matched): edt `1,4,31` → **`n1`, `n4`, `n31`**. This matches the
+`n1/n4/n31` entries of the published BattLeDIM 33-sensor list, so two independent sources agree.
+Note 82/92 junctions carry AMR meters (only `n5, n12, n14, n15, n37, n38, n348, n359, n363,
+n380` do not), confirming the deck's statement that Area C is the metered district. When
+searching for this again, grep the *renumbered* ids (`31`), not `n31`. A greedy
+sensitivity-matrix selection run independently (`scripts/ltown_c_posterior.py`, no access to
+this file) picked `n1` and `n4` among its first choices — a useful check on the placement code.
+
+**Built: `scripts/ltown_c_enumerate.py` (exact single-leak posterior, no MCMC) and
+`scripts/ltown_c_posterior.py` (M3 demand posterior, MCMC).** The enumerator implements the
+collapse described above: 92 forward solves give the exact `P(v|z)`, scored by shortest-path
+distance (BattLeDIM's own metric, `x_max = 50 m`). `--eps-sweep`, `--leak-size`, `--sensors`
+and `--leak-node` make it a seconds-per-configuration study tool. Results with the official
+sensors `n1/n4/n31`, medians over all 92 possible leak positions, `eps = 0.015 m`:
+
+| λ (m³/h) | BattLeDIM class | MAP err | within 50 m | exact node | eff. candidates (of 92) |
+|---|---|---|---|---|---|
+| 1.8 | background 1% | 208 m | 18% | 13% | 86.7 |
+| 5.0 | background ~3% | 94 m | 39% | 29% | 64.0 |
+| 9.0 | background 5% | 28 m | 61% | 49% | 33.5 |
+| 18.0 | medium burst 10% | 0 m | 84% | 72% | 13.4 |
+| 27.0 | large burst 15% | 0 m | 91% | 84% | 6.7 |
+
+(uniform guessing ≈ 391 m expected error; network diameter 1142 m.) **Area C with its 3 real
+sensors cannot localize background leaks and can localize bursts.** Two non-obvious findings:
+(1) **MAP error and the rank of the true node are exactly constant in ε** — ε only rescales a
+monotone likelihood, so it changes posterior *spread* (entropy, expected error) but never the
+ranking; only the sensitivity of the *spread* to ε is real. (2) At λ=1.8 the MAP error is
+already 208 m at ε=0.001, so **the binding information limit is the 0.01 m reading
+quantization, not ε** — no sensor-quality improvement helps, only bigger leaks or more sensors.
+Worked example (λ=18, true leak `n370`): the true node ranks 2nd with P=0.082 against 0.0826
+for `n369` 41.8 m away — a near-tie the *node* metric scores as a failure and BattLeDIM's 50 m
+metric scores as a success. This is the concrete case for reporting distance, not node identity.
+EPANET's shipped `Accuracy 0.01` is far too loose for Area C's ~1e-2 m head differences; both
+scripts set `hydraulic.accuracy = 1e-8`.
+
+**Sampler trap on low-flow networks: `ensemble_init_dispersion` is ADDITIVE in state units.**
+M3's state is the raw demand vector (`initial_x = d0[...]`, ~5e-5 m³/s on Area C), and walkers
+start at `initial_x + ensemble_init_dispersion * N(0,1)`. The 0.05 default is ~1000× the demand
+scale here → acceptance 0.000, R-hat ~1e14. `scripts/ltown_c_posterior.py` sets it to
+`0.2 × median prior σ`. The sampler default is untouched (Alperovits/Kadu depend on it) but is
+scale-dependent and will bite on any low-flow network — worth fixing properly in the sampler.
 
 **Nominal-vs-real caveat (from the deck).** The distributed `.inp` is the *nominal* model:
 base demands and pipe parameters are randomized ±10% vs the "real" network used to generate
 the data, industrial patterns are withheld, and pipes `p37`/`p251` are closed in the real
 network. Any validation against BattLeDIM time series inherits that mismatch.
+
+## GNN vs posterior on the SMARTWINE-trained models (added 2026-09-02)
+
+**The real trained GNNs live in `/home/birkenma/Dokumente/SMARTWINE/old/data/<WDN>/`** —
+`gnn_model/best_model.pt` plus `data_generator/{train,val,test}_dataset.pt`, for Alperovits,
+Anytown, BAK, Baghmalek, Hanoi, Kadu (Modena/ZhiJiang have datasets but no model). Not the
+Seafile `SMARTWINE_data/` tree, which has no pipeline. Sensor sets come from
+`data_generator/graph_with_measurements.pickle` (`meas_*` nodes); `extra_demand` from
+`data_generator/parameters.json`. Alperovits `['1']` Δ=1.2 · Hanoi `['2','12','25']` Δ=5.5 ·
+Kadu `['3','19','24','14']` Δ=0.3 · BAK `['1','8','26','32']` · Anytown `['20','140']`.
+
+**Running these models correctly — four traps, all of which silently degrade results.**
+(1) The datasets store only `y` (normalised *pressure*, not head): recover head as
+`y*(max_p-min_p) + min_p + elevation`, with `min_p/max_p/reservoir_head/reservoir_node` from
+`dataset_stats.json`. (2) `x[:,0]` (base pressure) and `x[:,2]` (node type) are **constant
+across samples** — take them verbatim from any stored sample rather than re-deriving them;
+node type is `0` junction / `2` reservoir / **`3`** for the `meas_` node. Only `x[:,1]`, the
+observed sensor reading broadcast to every node, depends on the observation. (3) Use the
+dataset's own `edge_index` **and pass `edge_attr`** — rebuilding edge_index from the pickled
+(multi)graph gives 30 directed edges where the dataset stores 15, and dropping `edge_attr`
+changes predictions materially. (4) `Data.mask` marks the reservoir and `meas_` nodes, whose
+outputs are garbage by design — exclude them, and take the reservoir head from `dataset_stats`.
+With all four right, the Alperovits GCN predicts junction pressures to ~0.005 normalised.
+
+**Demand reconstruction from heads is BROKEN on most networks — systematic, not conditioning.**
+Reconstructing `q_e = sign(Δh)(|Δh|/r_e)^(1/n)` then mass balance, *from exact EPANET heads*:
+
+| network | recon demand sum vs true | verdict |
+|---|---|---|
+| Alperovits | 1.120 vs 1.120 | **exact (0.0% error)** |
+| Kadu | 0.147 vs 0.294 | exactly 2× low |
+| Anytown | 0.189 vs 0.473 | exactly 2.5× low |
+| BAK | 0.229 vs 1.146 | exactly 5× low |
+| Hanoi | 0.554 vs 5.539 | exactly 10× low |
+
+The ratios are **constant in the demand scale**, so this is a units/resistance bug in
+`compute_pipe_resistances_hw` or the reconstruction, *not* the low-flow ill-conditioning
+documented elsewhere (all five networks are LPS + H-W, 1 reservoir, no tanks/pumps/valves).
+**Only Alperovits can currently be used for demand-space evaluation.** Fixing this unblocks
+Hanoi/Kadu/BAK/Anytown and is the highest-value next task.
+
+**`scripts/observation_vs_prediction.py`** — draws a random single-leak observation
+(`v` uniform, `λ ~ U[0,Δ]`, noiseless sensors), finds every candidate node admitting a `λ_v`
+that reproduces the reading, and plots those exactly-consistent scenarios against the truth and
+the GNN. Note: conditioning on total demand as well (`--observe-total`) makes the noiseless
+single-leak posterior **collapse to a point mass** (λ = D − D⁰ pins it), so total demand is
+treated as unknown by default. Tolerance must be ≥ ~1e-4: EPANET reports heads to ~3e-5 m, and
+a tighter tolerance rejects the *true* node.
+
+Result on Alperovits over 10 random observations: **all 6 candidates are exactly consistent
+with the single sensor** (each with its own λ) — the ambiguity is genuine, not numerical.
+Posterior-mean error 0.27–0.97 (mean ≈0.55); **GNN error 0.77–3.73 (mean ≈1.5), i.e. 2–4×
+worse than the posterior mean and usually worse than the *worst* consistent scenario**, and it
+sometimes predicts negative demands. Caveat: the GNN was trained on *Dirichlet* scenarios and a
+single leak is a simplex corner, so part of that gap is distribution shift, not GNN quality —
+an in-distribution (Dirichlet) comparison is needed before blaming the model.
+
+## Visualisations + the ABC pivot (added 2026-09-02)
+
+**`scripts/viz_gnn_vs_posterior.py`** — AED-style network plots comparing GNN / ABC / exact
+posterior in **demand** space. One panel per method; each junction is two concentric discs
+(**outer = posterior std**, **inner = |estimate − truth|**) on `RdYlGn_r`, reservoir a grey
+square, sensors a blue hexagon drawn *behind* the node so a leak at a sensor stays visible, and
+each node annotated with its demand increase `Δ = d − d⁰`. Marker/figure sizes auto-scale with
+junction count. Flags: `--wdn --leak-node --seed --eps --abc-draws --no-gnn --out`.
+All three methods use the *same* single-leak prior and the same observation, so panels are
+directly comparable. Figures produced: `gnn_vs_posterior_aed.png` (Alperovits, leak at n4),
+`gnn_leak_at_sensor.png` (leak at the sensor), `kadu_abc_vs_exact_aed.png` (Kadu, no GNN).
+
+| case | GNN | ABC | exact |
+|---|---|---|---|
+| Alperovits, leak n4 | 0.1664 | 0.0285 | 0.0297 |
+| Alperovits, leak at sensor n1 | 0.1612 | 0.0307 | 0.0325 |
+| Kadu, leak n21, ε=0.2 | (n/a) | 0.0108 | 0.0094 |
+
+(mean per-node |error|.) **ABC and exact agree to a few %, mutually validating both**; the GNN
+is ~5× worse. Use `--no-gnn` on every network except Alperovits — the demand-reconstruction
+bug above makes GNN demands meaningless elsewhere.
+
+**ABC beats MCMC decisively in the flat-likelihood regime.** L-TOWN_C, same M3 model:
+ABC N=8000 in **147 s**, ESS **7968** (0.996 of N), 54.3 ESS/s — versus MCMC 4568 s, min-ESS
+1010, 0.2 ESS/s, **max R-hat 2.96 (never converged)**. ~270× more ESS/s, and ABC reproduces the
+exact linear-Gaussian answer while the MCMC's "0.77 max variance reduction" was a
+non-convergence artifact. **Do not quote that MCMC number.**
+
+**The criterion for which method to use:** `SNR = (prior-predictive sensor spread) / ε`.
+Estimate it with a handful of forward solves before choosing.
+
+| SNR | regime | tool |
+|---|---|---|
+| ≲ 1 | likelihood flatter than prior | **ABC — nearly free** (L-TOWN_C: SNR 0.17–0.34, ESS/N 0.996) |
+| ≫ 1 | posterior concentrated | ABC collapses; use **enumeration** if the prior is structured |
+| any, ε = 0 | noiseless | **only enumeration works** — ABC acceptance is exactly 0 (measure zero) |
+
+Measured on Kadu (4 sensors, Δ=0.3, prior-predictive spread 0.426 m): ESS/N = 0.28 at ε=0.5,
+0.049 at ε=0.2, 0.003 at ε=0.05, collapsed below. **MCMC fails in the same place** (R-hat 3.4 at
+ε=0.05) — that wall is identifiability, not algorithm. Realistic ε for Kadu is **0.2–0.5 m**
+(transducer 0.1–0.5 m at 0.1–0.5% of a ~100 m full scale, plus ±10% model mismatch contributing
+median 0.11 m / p95 0.45 m). Note Kadu's *entire* head spread is 2.00 m, so ε=0.5 is ~25% of the
+whole signal — ABC is efficient there precisely because the measurement is weak. Also: Kadu
+sensor `'3'` has prior-predictive spread **0.000 m** — it is completely insensitive to demand,
+so that placement is effectively 3 sensors, not 4.
+
+**Change-of-variables correction (was missing, now in `observation_vs_prediction.py`).** When
+λ is solved from the sensor constraint rather than observed, the induced posterior over the
+discrete candidate `v` carries a factor `‖∂h_Y/∂λ‖⁻¹` — a candidate whose reading responds
+slowly to λ explains a neighbourhood of observations more readily. Without it you silently get
+a *uniform* posterior over the consistent candidates. On Alperovits it moves P(v|z) from a flat
+0.167 to 0.14–0.20. Same Gram-determinant idea as M1/M5.
 
 ## Running things
 

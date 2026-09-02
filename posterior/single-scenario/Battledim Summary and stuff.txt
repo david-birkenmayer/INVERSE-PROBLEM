@@ -1,0 +1,25 @@
+-- Battledim --
+- Sensors pre-placed
+- base demands off by 10% -> Measurements at area C
+- No roughness data off by 10% -> Need to calibrate
+- Time series of exact sensor readings
+- Goal: Leak localization (a position, the closer, the better)
+
+Used Area C to calibrate demand of other metered zones
+
+
+
+
+What are good assumptions to make here for my model?:
+-> Demand error
+-> Pipe resistance error
+-> Sensor Noise
+
+At the moment: one leak, leaky node uniform, demand increase uniform in [0, extra_demand]
+
+
+Results:
+MCMC failed.
+Have to fall back to ABC or exact method (one leak, no noise is assumed)
+
+Sadly, the GNN didn't perform very well in terms of demand prediction...
