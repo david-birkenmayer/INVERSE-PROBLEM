@@ -212,14 +212,15 @@ def main():
                 print("ERROR: --score vs-posterior needs the GNN", file=sys.stderr); return 2
             Z = np.array(acc["gnn_z"]); E = np.array(acc["gnn_ex"])
             panels.append((f"GNN vs EXACT posterior  (mean |d_GNN-E[d|z]|/sigma, {len(Z)} obs)",
-                           Z.mean(0), Z.std(0)))
+                           Z.mean(0), Z.std(0), "posterior sigmas"))
             if acc["gnn_z_abc"]:
                 Za = np.array(acc["gnn_z_abc"])
                 panels.append((f"GNN vs ABC posterior  (mean |d_GNN-E[d|z]|/sigma, {len(Za)} obs)",
-                               Za.mean(0), Za.std(0)))
+                               Za.mean(0), Za.std(0), "posterior sigmas"))
             panels.append((f"GNN excess |d_GNN - E[d|z]|  (absolute, {len(E)} obs)",
-                           E.mean(0), E.std(0)))
-            for name, m, sd in panels:
+                           E.mean(0), E.std(0), "demand units (m3/s)"))
+            for pnl in panels:
+                name, m = pnl[0], pnl[1]
                 print(f"  {name:<62} mean {m.mean():.4f}  max {m.max():.4f}")
             inc = np.array(inc_acc).mean(0)
             _plot(args, inp, net, J, d0, d0 + inc, sensors, panels,
@@ -313,11 +314,18 @@ def _plot(args, inp, net, J, d0, d_true, sensors, panels, subtitle=None):
     keep = np.array([i for i, j in enumerate(J) if j not in ex], dtype=int)
     if keep.size == 0:
         keep = np.arange(len(J))
-    vmax = max(float(np.max(p[1][keep])) for p in panels)
-    vmax = max(vmax, max((float(np.max(p[2][keep])) for p in panels if p[2] is not None),
-                         default=0.0))
+    # Panels may declare a scale group (4th tuple element).  Panels measured in DIFFERENT
+    # units must not share a colour bar: mixing sigma-scores (order 10^3) with absolute
+    # demands (order 10^-1) renders the latter uniformly green and unreadable.
+    groups = [(p[3] if len(p) > 3 else "default") for p in panels]
+    gmax = {}
+    for p, g in zip(panels, groups):
+        v = float(np.max(p[1][keep]))
+        if p[2] is not None:
+            v = max(v, float(np.max(p[2][keep])))
+        gmax[g] = max(gmax.get(g, 0.0), v)
     cmap = plt.get_cmap("RdYlGn_r")
-    norm = plt.Normalize(0.0, vmax)
+    norms = {g: plt.Normalize(0.0, v if v > 0 else 1.0) for g, v in gmax.items()}
     inc = d_true - d0
 
     # Scale the canvas and the markers with the network size, otherwise anything past ~10
@@ -330,7 +338,9 @@ def _plot(args, inp, net, J, d0, d_true, sensors, panels, subtitle=None):
     fs_id = 9 if n <= 10 else max(6.0, 9 * (10.0 / n) ** 0.35)
     fs_d = 7.5 if n <= 10 else max(5.0, 7.5 * (10.0 / n) ** 0.35)
     fig, axes = plt.subplots(1, len(panels), figsize=(side * len(panels), side * 1.05))
-    for ax, (title, err, sd) in zip(np.atleast_1d(axes), panels):
+    for ax, pnl, g in zip(np.atleast_1d(axes), panels, groups):
+        title, err, sd = pnl[0], pnl[1], pnl[2]
+        norm = norms[g]
         for pid, p in net.pipes.items():
             a, b = p.start_node, p.end_node
             if a in xy and b in xy:
@@ -376,9 +386,16 @@ def _plot(args, inp, net, J, d0, d_true, sensors, panels, subtitle=None):
         handles.append(Line2D([], [], marker="o", ls="--", mfc="none", mec="k", ms=15,
                               label=f"excluded from colour scale: {', '.join(sorted(ex))}"))
     fig.legend(handles=handles, loc="upper center", ncol=len(handles), frameon=True, fontsize=9)
-    cb = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                      ax=np.atleast_1d(axes).tolist(), fraction=.025, pad=.02)
-    cb.set_label("absolute demand error / posterior std")
+    axl = np.atleast_1d(axes).tolist()
+    seen = []
+    for g in groups:
+        if g in seen:
+            continue
+        seen.append(g)
+        member_axes = [a for a, gg in zip(axl, groups) if gg == g]
+        cb = fig.colorbar(plt.cm.ScalarMappable(norm=norms[g], cmap=cmap),
+                          ax=member_axes, fraction=.03, pad=.02)
+        cb.set_label(g if g != "default" else "absolute demand error / posterior std")
     fig.suptitle(subtitle if subtitle else
                  rf"{args.wdn}: ONE observation, single-leak prior — outer ring = posterior std "
                  rf"for this observation; $\Delta$ = that node's TRUE demand increase $d-d^0$",
